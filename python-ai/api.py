@@ -18,6 +18,14 @@ app = FastAPI(title="QuantEdge Canonical AI Prediction Engine", version="3.0.0")
 PREDICTION_CACHE: Dict[str, Dict[str, Any]] = {}
 CACHE_MAX_SIZE = 500
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 class PredictionRequest(BaseModel):
     market: str
     timeframe: str = "5m"
@@ -343,13 +351,13 @@ async def get_prediction(req: PredictionRequest):
         pred_res["reason_no_trade"] = f"Counter-trend opposition across HTF ({mtf_alignment_str})"
 
     # Extract typed variables from pred_res
-    conf_val: float = float(pred_res.get("confidence", 50.0))
+    conf_val: float = _safe_float(pred_res.get("confidence"), 50.0)
     signal_quality_val: str = str(pred_res.get("signal_quality", "NEUTRAL"))
     raw_probs_pct = pred_res.get("probabilities_pct")
     prob_dict = raw_probs_pct if isinstance(raw_probs_pct, dict) else {}
-    prob_up: float = float(prob_dict.get("buy", 50.0))
-    prob_down: float = float(prob_dict.get("sell", 50.0))
-    prob_none: float = float(prob_dict.get("no_trade", 0.0))
+    prob_up: float = _safe_float(prob_dict.get("buy"), 50.0)
+    prob_down: float = _safe_float(prob_dict.get("sell"), 50.0)
+    prob_none: float = _safe_float(prob_dict.get("no_trade"), 0.0)
 
     # ── 9. Microstructure & Order Flow Support / Resistance ──
     range_c = max(0.0001, high_p - low_p)
@@ -415,10 +423,10 @@ async def get_prediction(req: PredictionRequest):
             "target_price": round(close_p + (0.45 * atr_val) if signal == "BUY" else (close_p - (0.45 * atr_val) if signal == "SELL" else close_p), decimals),
             "invalidation_price": round(close_p - (0.50 * atr_val) if signal == "BUY" else (close_p + (0.50 * atr_val) if signal == "SELL" else close_p), decimals),
             "expected_range_atr": round(atr_val, decimals),
-            "stability_score": float(pred_res.get("stability_score", 65.0)),
+            "stability_score": _safe_float(pred_res.get("stability_score"), 65.0),
             "recommended_horizon_candles": 1
         }),
-        "stability_score": float(pred_res.get("stability_score", 65.0))
+        "stability_score": _safe_float(pred_res.get("stability_score"), 65.0)
     }
 
     # Store in deduplication cache
