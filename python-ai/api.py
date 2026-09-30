@@ -325,7 +325,7 @@ async def get_prediction(req: PredictionRequest):
         model_version = (meta or {}).get("model_version", f"{model_name}_v3")
 
     # Apply MTF Confirmation & Extreme Volatility Filter (Rule 17 & 31)
-    signal = pred_res["signal"]
+    signal: str = str(pred_res["signal"])
     aligned_count = sum(1 for tf_s in mtf_dict.values() if tf_s == signal)
     opposing_count = sum(1 for tf_s in mtf_dict.values() if (signal == "BUY" and tf_s == "SELL") or (signal == "SELL" and tf_s == "BUY"))
     mtf_alignment_str = f"{aligned_count}/{len(mtf_dict)}"
@@ -342,6 +342,15 @@ async def get_prediction(req: PredictionRequest):
         pred_res["signal"] = "NO TRADE"
         pred_res["signal_quality"] = "NEUTRAL"
         pred_res["reason_no_trade"] = f"Counter-trend opposition across HTF ({mtf_alignment_str})"
+
+    # Extract typed variables from pred_res
+    conf_val: float = float(pred_res.get("confidence", 50.0))
+    signal_quality_val: str = str(pred_res.get("signal_quality", "NEUTRAL"))
+    raw_probs_pct = pred_res.get("probabilities_pct")
+    prob_dict = raw_probs_pct if isinstance(raw_probs_pct, dict) else {}
+    prob_up: float = float(prob_dict.get("buy", 50.0))
+    prob_down: float = float(prob_dict.get("sell", 50.0))
+    prob_none: float = float(prob_dict.get("no_trade", 0.0))
 
     # ── 9. Microstructure & Order Flow Support / Resistance ──
     range_c = max(0.0001, high_p - low_p)
@@ -378,7 +387,7 @@ async def get_prediction(req: PredictionRequest):
         "regime": regime_str,
         "mtf": mtf_dict,
         "mtf_alignment": mtf_alignment_str,
-        "signal_quality": pred_res["signal_quality"],
+        "signal_quality": signal_quality_val,
         "confidence_bucket": pred_res["confidence_bucket"],
         "features_timestamp": candle_ts_str,
         "model_version": model_version,
@@ -386,15 +395,15 @@ async def get_prediction(req: PredictionRequest):
 
         # UI & Dashboard Compatibility fields
         "market": req.market,
-        "confidence": pred_res["confidence"],
-        "probability_up": pred_res["probabilities_pct"]["buy"],
-        "probability_down": pred_res["probabilities_pct"]["sell"],
-        "probability_no_trade": pred_res["probabilities_pct"]["no_trade"],
+        "confidence": conf_val,
+        "probability_up": prob_up,
+        "probability_down": prob_down,
+        "probability_no_trade": prob_none,
         "trend": "Bullish" if signal == "BUY" else ("Bearish" if signal == "SELL" else "Neutral"),
-        "strength": pred_res["signal_quality"] + " CONFLUENCE",
-        "risk": "Low" if pred_res["confidence"] >= 70.0 else ("Medium" if pred_res["confidence"] >= 58.0 else "High"),
+        "strength": f"{signal_quality_val} CONFLUENCE",
+        "risk": "Low" if conf_val >= 70.0 else ("Medium" if conf_val >= 58.0 else "High"),
         "reason": explanation_factors,
-        "score": min(23, max(1, round((pred_res["confidence"] / 100.0) * 23.0))),
+        "score": min(23, max(1, round((conf_val / 100.0) * 23.0))),
         "candle_volume": int(vol_p),
         "buy_pressure_pct": buy_pct,
         "sell_pressure_pct": sell_pct,

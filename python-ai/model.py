@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Tuple, Optional, List
 import joblib
 import numpy as np
@@ -122,9 +122,9 @@ def train_model(
         "model_version": f"{model_name}_v3",
         "model_name": model_name,
         "target": "ATR_NORMALIZED_3_CLASS",
-        "training_timestamp": datetime.utcnow().isoformat() + "Z",
-        "train_samples": int(len(X_train)),
-        "test_samples": int(len(X_test)),
+        "training_timestamp": datetime.now(timezone.utc).isoformat(),
+        "train_samples": len(X_train),
+        "test_samples": len(X_test),
         "out_of_sample_accuracy": round(accuracy * 100.0, 2),
         "buy_precision": round(buy_prec * 100.0, 2),
         "sell_precision": round(sell_prec * 100.0, 2),
