@@ -218,7 +218,7 @@ def generate_features(df: pd.DataFrame, drop_warmup: bool = True) -> pd.DataFram
     vol_ma20 = vol_series.rolling(20, min_periods=1).mean()
     df['Vol_Surge'] = vol_series / np.maximum(vol_ma20, 1e-6)
 
-    obv_step = np.sign(ret1) * vol_series
+    obv_step = pd.Series(np.sign(ret1.to_numpy()) * vol_series.to_numpy(), index=df.index, dtype=float)
     obv = obv_step.cumsum()
     obv_ma = obv.rolling(20, min_periods=1).mean()
     obv_std = obv.rolling(20, min_periods=1).std().fillna(1.0)
@@ -236,7 +236,69 @@ def generate_features(df: pd.DataFrame, drop_warmup: bool = True) -> pd.DataFram
     df['Bullish_FVG'] = np.maximum(0.0, (low_series - high_shift2).fillna(0.0)) / safe_atr
     df['Bearish_FVG'] = np.maximum(0.0, (low_shift2 - high_series).fillna(0.0)) / safe_atr
 
-    # ── 10. Multi-Timeframe Trend Proxies (1h / 4h synthetic EMAs) ──
+    # ── 10. Candlestick Anatomy & Streak Momentum ──
+    # Streak count (consecutive green or red candles)
+    streak = np.zeros(n_candles, dtype=float)
+    cur_streak = 0.0
+    for i in range(1, n_candles):
+        if close_np[i-1] > open_np[i-1]:
+            cur_streak = (cur_streak + 1.0) if cur_streak > 0 else 1.0
+        elif close_np[i-1] < open_np[i-1]:
+            cur_streak = (cur_streak - 1.0) if cur_streak < 0 else -1.0
+        else:
+            cur_streak = 0.0
+        streak[i] = cur_streak
+    df['Streak_Count'] = streak
+
+    # Rejection Pinbars (Hammers and Shooting Stars)
+    safe_body = np.maximum(np.abs(body_val), 1e-6)
+    df['Pinbar_Bull'] = ((lower_wick >= 1.8 * safe_body) & (upper_wick <= 0.4 * safe_body)).astype(float)
+    df['Pinbar_Bear'] = ((upper_wick >= 1.8 * safe_body) & (lower_wick <= 0.4 * safe_body)).astype(float)
+
+    # Engulfing Patterns
+    prev_close = np.roll(close_np, 1)
+    prev_open = np.roll(open_np, 1)
+    df['Engulf_Bull'] = ((close_np > prev_open) & (open_np < prev_close) & (close_np > open_np) & (prev_close < prev_open)).astype(float)
+    df['Engulf_Bear'] = ((close_np < prev_open) & (open_np > prev_close) & (close_np < open_np) & (prev_close > prev_open)).astype(float)
+
+    # Inside Bar (consolidation compression)
+    prev_high = np.roll(high_np, 1)
+    prev_low = np.roll(low_np, 1)
+    df['Inside_Bar'] = ((high_np < prev_high) & (low_np > prev_low)).astype(float)
+
+    # Bollinger Bands %B (normalized position 0.0 to 1.0)
+    bb_u = pd.Series(df['BB_Upper'], dtype=float).to_numpy()
+    bb_l = pd.Series(df['BB_Lower'], dtype=float).to_numpy()
+    bb_span = np.maximum(bb_u - bb_l, 1e-6)
+    df['BB_PctB'] = (close_np - bb_l) / bb_span
+
+    # Volume Absorption / Churn (effort vs result)
+    avg_vol = np.maximum(float(np.mean(vol_np)), 1e-6)
+    df['Volume_Absorption'] = (vol_np / avg_vol) / (np.maximum(np.abs(body_val), 0.00001) / safe_atr)
+
+    # EMA Trend Stack hierarchy (+1 for 9>20>50, -1 for 9<20<50, 0 mixed)
+    ema9_np = pd.Series(df['EMA_9'], dtype=float).to_numpy()
+    ema20_np = pd.Series(df['EMA_20'], dtype=float).to_numpy()
+    ema50_np = pd.Series(df['EMA_50'], dtype=float).to_numpy()
+    stack_bull = (ema9_np > ema20_np) & (ema20_np > ema50_np)
+    stack_bear = (ema9_np < ema20_np) & (ema20_np < ema50_np)
+    df['EMA_Stack'] = np.where(stack_bull, 1.0, np.where(stack_bear, -1.0, 0.0))
+
+    # Close Location within total candle high-low range (0.0 to 1.0)
+    df['Close_Pos_Range'] = (close_np - low_np) / safe_range
+
+    # 3-Candle Price Velocity normalized by ATR
+    prev_close_3 = np.roll(close_np, 3)
+    df['Candle_Velocity_3'] = (close_np - prev_close_3) / safe_atr
+
+    # Oscillators Momentum Acceleration
+    rsi_np = pd.Series(df['RSI'], dtype=float).to_numpy()
+    df['RSI_Slope'] = (rsi_np - np.roll(rsi_np, 2)) / 10.0
+    df['MACD_Hist_Slope'] = (pd.Series(df['MACD_Hist_ATR'], dtype=float) - pd.Series(df['MACD_Hist_ATR'], dtype=float).shift(2).fillna(0.0))
+
+    # ── 11. Multi-Timeframe Trend Proxies (15m / 1h / 4h synthetic EMAs) ──
+    ema_15m = close_series.ewm(span=min(12, n_candles), adjust=False).mean()
+    df['HTF_15m_Align'] = np.where(close_series > ema_15m, 1.0, -1.0)
     ema_1h = close_series.ewm(span=min(36, n_candles), adjust=False).mean()
     df['HTF_1h_Align'] = np.where(close_series > ema_1h, 1.0, -1.0)
     ema_4h = close_series.ewm(span=min(144, n_candles), adjust=False).mean()

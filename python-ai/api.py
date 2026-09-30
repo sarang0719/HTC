@@ -175,8 +175,7 @@ async def get_prediction(req: PredictionRequest):
     # ── 1. Data Validation Layer (Rule 30) ──
     for col in ['open', 'high', 'low', 'close', 'volume']:
         if col in df.columns:
-            arr = pd.to_numeric(df[col], errors='coerce').to_numpy(dtype=float)
-            df[col] = np.nan_to_num(arr, nan=0.0)
+            df[col] = [float(v) if pd.notna(v) and str(v).strip() != '' else 0.0 for v in df[col]]
         else:
             df[col] = 0.0
 
@@ -193,14 +192,14 @@ async def get_prediction(req: PredictionRequest):
     # Timestamp normalization
     if 'timestamp' in df.columns:
         if pd.api.types.is_numeric_dtype(df['timestamp']):
-            sample_val = float(df['timestamp'].iloc[0]) if len(df) > 0 else 0
+            sample_val = float(np.asarray(df['timestamp'])[0]) if len(df) > 0 else 0.0
             unit = 'ms' if sample_val > 1e11 else 's'
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit=unit, errors='coerce')
         else:
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     elif 'time' in df.columns:
         if pd.api.types.is_numeric_dtype(df['time']):
-            sample_val = float(df['time'].iloc[0]) if len(df) > 0 else 0
+            sample_val = float(np.asarray(df['time'])[0]) if len(df) > 0 else 0.0
             unit = 'ms' if sample_val > 1e11 else 's'
             df['timestamp'] = pd.to_datetime(df['time'], unit=unit, errors='coerce')
         else:
@@ -208,7 +207,7 @@ async def get_prediction(req: PredictionRequest):
     else:
         df['timestamp'] = pd.date_range(end=pd.Timestamp.now(), periods=len(df), freq='1min')
 
-    df = df.sort_values('timestamp').drop_duplicates('timestamp').reset_index(drop=True)
+    df = df.iloc[np.asarray(df['timestamp']).argsort()].drop_duplicates(subset=['timestamp']).reset_index(drop=True)
 
     # ── 2. Completed Candle Only (Rule 18) ──
     # The last candle in a live stream is often the currently open candle.
@@ -409,7 +408,17 @@ async def get_prediction(req: PredictionRequest):
         "sell_pressure_pct": sell_pct,
         "position_hold_zone": hold_level,
         "next_support": next_support,
-        "next_resistance": next_resistance
+        "next_resistance": next_resistance,
+        "upcoming_candle": pred_res.get("upcoming_candle", {
+            "predicted_color": "GREEN" if signal == "BUY" else ("RED" if signal == "SELL" else "GRAY"),
+            "candle_type": "BULLISH_EXPANSION" if signal == "BUY" else ("BEARISH_EXPANSION" if signal == "SELL" else "CONSOLIDATION_DOJI"),
+            "target_price": round(close_p + (0.45 * atr_val) if signal == "BUY" else (close_p - (0.45 * atr_val) if signal == "SELL" else close_p), decimals),
+            "invalidation_price": round(close_p - (0.50 * atr_val) if signal == "BUY" else (close_p + (0.50 * atr_val) if signal == "SELL" else close_p), decimals),
+            "expected_range_atr": round(atr_val, decimals),
+            "stability_score": float(pred_res.get("stability_score", 65.0)),
+            "recommended_horizon_candles": 1
+        }),
+        "stability_score": float(pred_res.get("stability_score", 65.0))
     }
 
     # Store in deduplication cache

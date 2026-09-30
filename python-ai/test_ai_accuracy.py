@@ -13,8 +13,8 @@ def run_walk_forward_backtest(
     symbol: str,
     timeframe: str = '5m',
     total_candles: int = 5000,
-    k_factor: float = 0.30,
-    n_splits: int = 4
+    k_factor: float = 0.25,
+    confidence_threshold: float = 0.58
 ) -> Optional[Dict[str, Any]]:
     """
     Institutional Walk-Forward Out-Of-Sample Validation Engine (Rules 14, 24, 25, 26, 27):
@@ -24,6 +24,7 @@ def run_walk_forward_backtest(
     - Confidence Bucket Breakdown (50-55%, 55-60%, 60-65%, 65-70%, 70-75%, 75%+)
     - Performance by Market Regime (TREND_UP, TREND_DOWN, RANGE, HIGH_VOLATILITY, BREAKOUT)
     - Simulated Trading Metrics: Win Rate, Profit Factor, Max Drawdown
+    - Stability Score and Upcoming Candle Accuracy
     """
     print(f"\n=======================================================")
     print(f"  WALK-FORWARD AI OUT-OF-SAMPLE BENCHMARK: {symbol} ({timeframe})")
@@ -34,15 +35,22 @@ def run_walk_forward_backtest(
         print(f"[-] Insufficient historical data for {symbol} ({timeframe}): {len(df_raw)} candles.")
         return None
 
-    # Generate 68 institutional features + regime flags
+    # Generate institutional features + candlestick anatomy + regime flags
     df_feat = generate_features(df_raw, drop_warmup=True)
     df_target = prepare_target(df_feat, k_factor=k_factor)
 
     model_name = f"{symbol}_{timeframe}"
     model, features, meta = load_model(model_name)
 
-    # Force retrain if stale model or non-stationary features detected
-    needs_train = (not model or not features or 'EMA_20' in features or (meta and meta.get('dataset_rows', 0) < 3000))
+    # Force retrain if stale model or non-stationary features or missing new anatomy features
+    needs_train = (
+        not model or
+        not features or
+        'EMA_20' in features or
+        'Streak_Count' not in features or
+        'BB_PctB' not in features or
+        (meta and meta.get('dataset_rows', 0) < 3000)
+    )
     if needs_train:
         print(f"[*] Training/Updating canonical model {model_name} with {total_candles} real candles...")
         model = run_training(symbol, timeframe, limit=total_candles, k_factor=k_factor)
@@ -60,7 +68,7 @@ def run_walk_forward_backtest(
     print(f"[*] Dataset: {total_samples} total candles | Out-Of-Sample Test Set: {len(df_oos)} candles.")
 
     # High-speed vectorized prediction across out-of-sample data
-    predictions = predict_batch(model, features, df_oos, confidence_threshold=0.58)
+    predictions = predict_batch(model, features, df_oos, confidence_threshold=confidence_threshold)
 
     y_true = df_oos['target'].to_numpy(dtype=int)
     future_rets = df_oos['future_return'].to_numpy(dtype=float)
@@ -160,6 +168,10 @@ def run_walk_forward_backtest(
     no_trade_pct = (no_trade_signals / total_oos * 100.0) if total_oos > 0 else 0.0
     mean_brier = float(np.mean(brier_scores)) if brier_scores else 0.0
 
+    # Stability score tracking
+    active_stabilities = [float(pred.get('stability_score', 50.0)) for pred in predictions if pred['signal'] != 'NO TRADE']
+    avg_stability = float(np.mean(active_stabilities)) if active_stabilities else 50.0
+
     # Financial trading performance
     if trade_returns:
         gains = [r for r in trade_returns if r > 0]
@@ -187,6 +199,7 @@ def run_walk_forward_backtest(
     print(f"  • Directional Win Rate:         {directional_acc:.2f}%")
     print(f"  • BUY Precision:                {buy_precision:.2f}%")
     print(f"  • SELL Precision:               {sell_precision:.2f}%")
+    print(f"  • AI Stability Score:           {avg_stability:.1f} / 100")
     print(f"  • Brier Score:                  {mean_brier:.4f}")
     print(f"  • Profit Factor:                {profit_factor:.2f}")
     print(f"  • Max Drawdown:                 {max_drawdown:.2f}%")
@@ -232,6 +245,7 @@ def run_walk_forward_backtest(
         "accuracy": round(directional_acc, 2),
         "buy_precision": round(buy_precision, 2),
         "sell_precision": round(sell_precision, 2),
+        "stability_score": round(avg_stability, 1),
         "brier_score": round(mean_brier, 4),
         "profit_factor": round(profit_factor, 2),
         "max_drawdown": round(max_drawdown, 2),
@@ -242,25 +256,30 @@ def run_walk_forward_backtest(
 
 if __name__ == "__main__":
     benchmark_markets = [
-        ("BTCUSDT", "5m"),
-        ("PAXGUSDT", "5m"),
         ("EURUSD", "5m"),
-        ("GBPUSD", "5m")
+        ("PAXGUSDT", "5m"),
+        ("BTCUSDT", "5m"),
+        ("GBPUSD", "5m"),
+        ("EURUSD", "15m"),
+        ("BTCUSDT", "15m"),
+        ("EURUSD", "1m")
     ]
 
     all_results = []
     for sym, tf in benchmark_markets:
         try:
-            res = run_walk_forward_backtest(sym, tf, total_candles=5000)
+            res = run_walk_forward_backtest(sym, tf, total_candles=5000, k_factor=0.25)
             if res:
                 all_results.append(res)
         except Exception as e:
             print(f"[-] Benchmark error for {sym} {tf}: {e}")
 
-    print("\n" + "█" * 80)
-    print("       CANONICAL AI ENGINE: FINAL OUT-OF-SAMPLE BENCHMARK AUDIT")
-    print("   (Strict Walk-Forward · 3-Class ATR Target · Calibrated Probabilities)")
-    print("█" * 80)
+    print("\n" + "█" * 92)
+    print("           CANONICAL AI ENGINE: EXTENDED WALK-FORWARD MULTI-ASSET AUDIT")
+    print("     (Stationary Features · Candlestick Microstructure · Calibrated Probabilities)")
+    print("█" * 92)
+    print(f"  {'Asset':<10} {'TF':<4} | {'Win Rate':<9} | {'Buy Prec':<9} | {'Sell Prec':<10} | {'Stability':<9} | {'Coverage':<8} | {'PF':<5}")
+    print("  " + "─" * 88)
     for r in all_results:
-        print(f"  {r['symbol']:<10} {r['timeframe']:<4} | Win Rate: {r['accuracy']:>6.2f}% | Buy Prec: {r['buy_precision']:>6.2f}% | Sell Prec: {r['sell_precision']:>6.2f}% | Cov: {r['signal_coverage']:>5.1f}% | PF: {r['profit_factor']:>4.2f}")
-    print("█" * 80 + "\n")
+        print(f"  {r['symbol']:<10} {r['timeframe']:<4} | {r['accuracy']:>7.2f}% | {r['buy_precision']:>7.2f}% | {r['sell_precision']:>8.2f}% | {r['stability_score']:>6.1f}/100 | {r['signal_coverage']:>6.1f}% | {r['profit_factor']:>4.2f}")
+    print("█" * 92 + "\n")

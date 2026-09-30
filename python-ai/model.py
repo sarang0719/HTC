@@ -239,6 +239,7 @@ def predict(
         signal_quality = "HIGH" if dir_sell >= 65.0 else ("MEDIUM" if dir_sell >= 60.0 else "MODERATE")
 
     # Confidence bucket categorization (Rule 26)
+    # Confidence bucket categorization (Rule 26)
     if confidence >= 75.0:
         bucket = "75%+"
     elif confidence >= 70.0:
@@ -251,6 +252,40 @@ def predict(
         bucket = "55-60%"
     else:
         bucket = "50-55%"
+
+    # ── Upcoming Candle Prediction & Stability Engine ──
+    curr_close = float(df_row['close'].iloc[0]) if 'close' in df_row.columns and len(df_row) > 0 else 0.0
+    atr_val = float(df_row['ATR'].iloc[0]) if 'ATR' in df_row.columns and len(df_row) > 0 else (curr_close * 0.002)
+
+    chop_factor = max(0.0, (p_no_trade - 25.0) * 1.5)
+    delta_bonus = min(35.0, raw_delta * 1.8)
+    stability_score = round(float(np.clip(50.0 + delta_bonus - chop_factor, 15.0, 98.0)), 1)
+
+    if signal == "BUY":
+        pred_color = "GREEN"
+        target_price = round(curr_close + (0.45 * atr_val), 5)
+        invalidation_price = round(curr_close - (0.50 * atr_val), 5)
+        candle_type = "BULLISH_EXPANSION" if confidence >= 65.0 else "BULLISH_CONTINUATION"
+    elif signal == "SELL":
+        pred_color = "RED"
+        target_price = round(curr_close - (0.45 * atr_val), 5)
+        invalidation_price = round(curr_close + (0.50 * atr_val), 5)
+        candle_type = "BEARISH_EXPANSION" if confidence >= 65.0 else "BEARISH_CONTINUATION"
+    else:
+        pred_color = "GRAY"
+        target_price = round(curr_close, 5)
+        invalidation_price = round(curr_close, 5)
+        candle_type = "CONSOLIDATION_DOJI"
+
+    upcoming_candle = {
+        "predicted_color": pred_color,
+        "candle_type": candle_type,
+        "target_price": target_price,
+        "invalidation_price": invalidation_price,
+        "expected_range_atr": round(atr_val, 5),
+        "stability_score": stability_score,
+        "recommended_horizon_candles": 1
+    }
 
     return {
         "signal": signal,
@@ -272,7 +307,9 @@ def predict(
         },
         "signal_quality": signal_quality,
         "confidence_bucket": bucket,
-        "reason_no_trade": reason_no_trade
+        "reason_no_trade": reason_no_trade,
+        "upcoming_candle": upcoming_candle,
+        "stability_score": stability_score
     }
 
 def predict_batch(
@@ -298,8 +335,11 @@ def predict_batch(
     idx_buy = classes.index(CLASS_BUY) if CLASS_BUY in classes else -1
     idx_sell = classes.index(CLASS_SELL) if CLASS_SELL in classes else -1
 
+    closes = df_features['close'].to_numpy(dtype=float) if 'close' in df_features.columns else np.zeros(len(df_features))
+    atrs = df_features['ATR'].to_numpy(dtype=float) if 'ATR' in df_features.columns else (closes * 0.002)
+
     results = []
-    for probs in all_probs:
+    for i, probs in enumerate(all_probs):
         p_no_trade = float(probs[idx_none]) if idx_none >= 0 else 0.0
         p_buy = float(probs[idx_buy]) if idx_buy >= 0 else 0.0
         p_sell = float(probs[idx_sell]) if idx_sell >= 0 else 0.0
@@ -345,6 +385,28 @@ def predict_batch(
         else:
             bucket = "50-55%"
 
+        curr_c = closes[i]
+        curr_atr = atrs[i]
+        chop_factor = max(0.0, (p_no_trade - 25.0) * 1.5)
+        delta_bonus = min(35.0, raw_delta * 1.8)
+        stability_score = round(float(np.clip(50.0 + delta_bonus - chop_factor, 15.0, 98.0)), 1)
+
+        if signal == "BUY":
+            pred_col = "GREEN"
+            t_price = round(curr_c + (0.45 * curr_atr), 5)
+            inv_price = round(curr_c - (0.50 * curr_atr), 5)
+            c_type = "BULLISH_EXPANSION" if conf >= 65.0 else "BULLISH_CONTINUATION"
+        elif signal == "SELL":
+            pred_col = "RED"
+            t_price = round(curr_c - (0.45 * curr_atr), 5)
+            inv_price = round(curr_c + (0.50 * curr_atr), 5)
+            c_type = "BEARISH_EXPANSION" if conf >= 65.0 else "BEARISH_CONTINUATION"
+        else:
+            pred_col = "GRAY"
+            t_price = round(curr_c, 5)
+            inv_price = round(curr_c, 5)
+            c_type = "CONSOLIDATION_DOJI"
+
         results.append({
             "signal": signal,
             "confidence": float(round(conf, 1)),
@@ -364,7 +426,17 @@ def predict_batch(
                 "buy": float(round(dir_buy, 1)),
                 "sell": float(round(dir_sell, 1))
             },
-            "signal_quality": quality
+            "signal_quality": quality,
+            "upcoming_candle": {
+                "predicted_color": pred_col,
+                "candle_type": c_type,
+                "target_price": t_price,
+                "invalidation_price": inv_price,
+                "expected_range_atr": round(curr_atr, 5),
+                "stability_score": stability_score,
+                "recommended_horizon_candles": 1
+            },
+            "stability_score": stability_score
         })
 
     return results

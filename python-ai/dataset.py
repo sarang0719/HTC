@@ -201,12 +201,12 @@ def validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
     # Ensure timestamp is datetime
-    if not np.issubdtype(df['timestamp'].dtype, np.datetime64):
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
         df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
     # Deduplicate timestamps and sort
-    df = df.drop_duplicates(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
+    df = df.drop_duplicates(subset=['timestamp']).sort_values(by='timestamp').reset_index(drop=True)
 
     # Valid OHLC bounds
     valid_bounds = (
@@ -218,7 +218,7 @@ def validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
         (df['open'] > 0) &
         (df['close'] > 0)
     )
-    df = df[valid_bounds].copy()
+    df = pd.DataFrame(df.loc[valid_bounds]).copy()
 
     # Normalize volume
     df['volume'] = np.where(df['volume'] < 0, 0.0, df['volume'])
@@ -229,9 +229,9 @@ def validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     df['low'] = np.minimum(df['low'], np.minimum(df['open'], df['close']))
 
     # Filter catastrophic outlier single-candle flash crashes / spikes (>30% jump)
-    pct_changes = df['close'].pct_change().abs().fillna(0.0)
+    pct_changes = pd.Series(df['close'].pct_change().abs().fillna(0.0))
     normal_returns = pct_changes <= 0.30
-    df = df[normal_returns].reset_index(drop=True)
+    df = pd.DataFrame(df.loc[normal_returns]).reset_index(drop=True)
 
     return df
 

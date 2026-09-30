@@ -6,7 +6,7 @@ from dataset import fetch_historical_data
 from feature_engine import generate_features
 from model import train_model
 
-def prepare_target(df: pd.DataFrame, k_factor: float = 0.30) -> pd.DataFrame:
+def prepare_target(df: pd.DataFrame, k_factor: float = 0.25) -> pd.DataFrame:
     """
     3-Class Target Formulation (Rule 5 & 6):
     - Future Return: (next_close - current_close) / current_close
@@ -24,7 +24,7 @@ def prepare_target(df: pd.DataFrame, k_factor: float = 0.30) -> pd.DataFrame:
     future_return = (next_close - curr_close) / curr_close
     atr = df['ATR'] if 'ATR' in df.columns else (df['high'] - df['low'])
     atr_pct = atr / np.maximum(curr_close, 1e-6)
-    threshold = np.maximum(k_factor * atr_pct, 0.0001)
+    threshold = np.maximum(k_factor * atr_pct, 0.00005)
 
     conditions = [
         future_return > threshold,
@@ -43,7 +43,7 @@ def run_training(
     symbol: str,
     timeframe: str = '5m',
     limit: int = 5000,
-    k_factor: float = 0.30
+    k_factor: float = 0.25
 ) -> Optional[Any]:
     print(f"\n=================================================================")
     print(f"  Training Canonical 3-Class AI Model: {symbol} ({timeframe})")
