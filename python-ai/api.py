@@ -244,13 +244,31 @@ async def get_prediction(req: PredictionRequest):
     is_volatility_shock = (atr_exp >= 2.4)
 
     # ── 6. Model Loading & Symbol-Specific Inference (Rule 9, 13, 15) ──
-    model_name = f"{mapped_market}_{tf_clean}"
+    raw_sym = req.market.upper().replace("/", "").replace(" ", "").replace("-", "")
+    canonical_sym = (
+        "EURUSD" if raw_sym in ["EURUSD", "EURUSDT"] else
+        "GBPUSD" if raw_sym in ["GBPUSD", "GBPUSDT"] else
+        "PAXGUSDT" if raw_sym in ["PAXGUSDT", "XAUUSD", "GOLD", "XAUTUSDT", "XAUTUSDC"] else
+        "BTCUSDT" if raw_sym in ["BTCUSD", "BTCUSDT"] else
+        "ETHUSDT" if raw_sym in ["ETHUSD", "ETHUSDT"] else
+        mapped_market
+    )
+
+    model_name = f"{canonical_sym}_{tf_clean}"
     model, features, meta = load_model(model_name)
+    if not model or not features:
+        model, features, meta = load_model(f"{raw_sym}_{tf_clean}")
+    if not model or not features:
+        model, features, meta = load_model(f"{mapped_market}_{tf_clean}")
 
     # Fallback to adjacent timeframe model
     if not model or not features:
         for fallback_tf in ["5m", "15m", "1h", "1m"]:
-            model, features, meta = load_model(f"{mapped_market}_{fallback_tf}")
+            for sym_variant in [canonical_sym, raw_sym, mapped_market]:
+                model, features, meta = load_model(f"{sym_variant}_{fallback_tf}")
+                if model and features:
+                    model_name = f"{sym_variant}_{fallback_tf}"
+                    break
             if model and features:
                 break
 
@@ -260,6 +278,7 @@ async def get_prediction(req: PredictionRequest):
             for fallback_tf in ["5m", "15m", "1h", "1m"]:
                 model, features, meta = load_model(f"{fallback_sym}_{fallback_tf}")
                 if model and features:
+                    model_name = f"{fallback_sym}_{fallback_tf}"
                     break
             if model and features:
                 break
@@ -302,12 +321,13 @@ async def get_prediction(req: PredictionRequest):
         }
         model_version = "heuristic_baseline_v1"
     else:
-        pred_res = predict(model, features, latest_row, confidence_threshold=0.52)
+        pred_res = predict(model, features, latest_row, confidence_threshold=0.58)
         model_version = (meta or {}).get("model_version", f"{model_name}_v3")
 
     # Apply MTF Confirmation & Extreme Volatility Filter (Rule 17 & 31)
     signal = pred_res["signal"]
     aligned_count = sum(1 for tf_s in mtf_dict.values() if tf_s == signal)
+    opposing_count = sum(1 for tf_s in mtf_dict.values() if (signal == "BUY" and tf_s == "SELL") or (signal == "SELL" and tf_s == "BUY"))
     mtf_alignment_str = f"{aligned_count}/{len(mtf_dict)}"
 
     if is_volatility_shock:
@@ -316,12 +336,12 @@ async def get_prediction(req: PredictionRequest):
         pred_res["signal_quality"] = "PROTECTED"
         pred_res["reason_no_trade"] = "Extreme volatility expansion shock detected"
 
-    elif signal in ["BUY", "SELL"] and aligned_count < 2:
-        # Mixed timeframes weaken conviction -> Switch to NO TRADE
+    elif signal in ["BUY", "SELL"] and opposing_count >= 3:
+        # Severe counter-trend opposition across multiple timeframes -> Switch to NO TRADE
         signal = "NO TRADE"
         pred_res["signal"] = "NO TRADE"
         pred_res["signal_quality"] = "NEUTRAL"
-        pred_res["reason_no_trade"] = f"Mixed timeframes alignment ({mtf_alignment_str})"
+        pred_res["reason_no_trade"] = f"Counter-trend opposition across HTF ({mtf_alignment_str})"
 
     # ── 9. Microstructure & Order Flow Support / Resistance ──
     range_c = max(0.0001, high_p - low_p)

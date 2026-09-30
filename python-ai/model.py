@@ -40,7 +40,11 @@ def train_model(
     """
     excluded = [
         'timestamp', target_col, 'open', 'high', 'low', 'close', 'volume',
-        'sample_weight', 'market_regime', 'future_return'
+        'sample_weight', 'market_regime', 'future_return',
+        'EMA_9', 'EMA_20', 'EMA_50', 'EMA_100', 'EMA_200',
+        'BB_Lower', 'BB_Mid', 'BB_Upper',
+        'ATR', 'body_size', 'candle_range',
+        'MACD', 'MACD_Signal', 'MACD_Hist'
     ]
     features = [c for c in df.columns if c not in excluded]
 
@@ -93,7 +97,7 @@ def train_model(
     ensemble = VotingClassifier(
         estimators=[('hgb', m1), ('et', m2), ('rf', m3)],
         voting='soft',
-        weights=[2.5, 1.2, 1.0]
+        weights=[2.0, 1.2, 1.0]
     )
 
     ensemble.fit(X_train, y_train, sample_weight=w_train)
@@ -174,10 +178,14 @@ def predict(
     model: Any,
     features_list: List[str],
     df_row: pd.DataFrame,
-    confidence_threshold: float = 0.52
+    confidence_threshold: float = 0.58
 ) -> Dict[str, Any]:
     """
     Produce calibrated empirical probabilities for 3-class decision: BUY, SELL, or NO_TRADE (Rule 6, 17, 20).
+    Directional edge is computed conditionally over trading actions:
+    P(BUY | Trade) = p_buy / (p_buy + p_sell)
+    P(SELL | Trade) = p_sell / (p_buy + p_sell)
+    Chop Gate filters consolidation when p_no_trade >= 55.0%
     """
     cols_to_add = [c for c in features_list if c not in df_row.columns]
     if cols_to_add:
@@ -199,27 +207,36 @@ def predict(
     p_buy = round((p_buy / total_prob) * 100.0, 1)
     p_sell = round((p_sell / total_prob) * 100.0, 1)
 
-    # Decision logic (Rule 17):
-    # Only issue directional BUY/SELL when probability >= confidence_threshold (default 52-54%)
-    # and directional edge over opposing side exceeds delta
-    delta = abs(p_buy - p_sell)
-    dominant_dir_prob = max(p_buy, p_sell)
+    # Directional conditional conviction
+    dir_sum = p_buy + p_sell + 1e-9
+    dir_buy = (p_buy / dir_sum) * 100.0
+    dir_sell = (p_sell / dir_sum) * 100.0
+    raw_delta = abs(p_buy - p_sell)
+    dominant_conviction = max(dir_buy, dir_sell)
 
-    if dominant_dir_prob < (confidence_threshold * 100.0) or delta < 8.0:
+    # Decision logic (Rule 17):
+    # 1. Chop gate: If market is in flat consolidation (p_no_trade >= 55.0%), decline trade
+    # 2. Conviction gate: Require directional conviction >= confidence_threshold (default 58%) and raw delta >= 5.0%
+    if p_no_trade >= 55.0:
         signal = "NO TRADE"
-        reason_no_trade = "Low directional edge" if delta < 8.0 else "Confidence below conviction threshold"
+        reason_no_trade = "Market in consolidation chop"
         signal_quality = "NEUTRAL"
         confidence = p_no_trade
-    elif p_buy > p_sell:
+    elif dominant_conviction < (confidence_threshold * 100.0) or raw_delta < 5.0:
+        signal = "NO TRADE"
+        reason_no_trade = "Directional conviction below threshold" if dominant_conviction < (confidence_threshold * 100.0) else "Low directional edge"
+        signal_quality = "NEUTRAL"
+        confidence = p_no_trade
+    elif dir_buy > dir_sell:
         signal = "BUY"
         reason_no_trade = None
-        confidence = p_buy
-        signal_quality = "HIGH" if p_buy >= 65.0 else ("MEDIUM" if p_buy >= 55.0 else "MODERATE")
+        confidence = round(dir_buy, 1)
+        signal_quality = "HIGH" if dir_buy >= 65.0 else ("MEDIUM" if dir_buy >= 60.0 else "MODERATE")
     else:
         signal = "SELL"
         reason_no_trade = None
-        confidence = p_sell
-        signal_quality = "HIGH" if p_sell >= 65.0 else ("MEDIUM" if p_sell >= 55.0 else "MODERATE")
+        confidence = round(dir_sell, 1)
+        signal_quality = "HIGH" if dir_sell >= 65.0 else ("MEDIUM" if dir_sell >= 60.0 else "MODERATE")
 
     # Confidence bucket categorization (Rule 26)
     if confidence >= 75.0:
@@ -249,6 +266,10 @@ def predict(
             "sell": p_sell,
             "no_trade": p_no_trade
         },
+        "directional_conviction": {
+            "buy": float(round(dir_buy, 1)),
+            "sell": float(round(dir_sell, 1))
+        },
         "signal_quality": signal_quality,
         "confidence_bucket": bucket,
         "reason_no_trade": reason_no_trade
@@ -258,7 +279,7 @@ def predict_batch(
     model: Any,
     features_list: List[str],
     df_features: pd.DataFrame,
-    confidence_threshold: float = 0.52
+    confidence_threshold: float = 0.58
 ) -> List[Dict[str, Any]]:
     """
     Vectorized high-speed prediction for walk-forward backtests.
@@ -288,21 +309,28 @@ def predict_batch(
         p_buy = (p_buy / total) * 100.0
         p_sell = (p_sell / total) * 100.0
 
-        delta = abs(p_buy - p_sell)
-        dominant = max(p_buy, p_sell)
+        dir_sum = p_buy + p_sell + 1e-9
+        dir_buy = (p_buy / dir_sum) * 100.0
+        dir_sell = (p_sell / dir_sum) * 100.0
+        raw_delta = abs(p_buy - p_sell)
+        dominant_conviction = max(dir_buy, dir_sell)
 
-        if dominant < (confidence_threshold * 100.0) or delta < 8.0:
+        if p_no_trade >= 55.0:
             signal = "NO TRADE"
             conf = p_no_trade
             quality = "NEUTRAL"
-        elif p_buy > p_sell:
+        elif dominant_conviction < (confidence_threshold * 100.0) or raw_delta < 5.0:
+            signal = "NO TRADE"
+            conf = p_no_trade
+            quality = "NEUTRAL"
+        elif dir_buy > dir_sell:
             signal = "BUY"
-            conf = p_buy
-            quality = "HIGH" if p_buy >= 65.0 else ("MEDIUM" if p_buy >= 55.0 else "MODERATE")
+            conf = round(dir_buy, 1)
+            quality = "HIGH" if dir_buy >= 65.0 else ("MEDIUM" if dir_buy >= 60.0 else "MODERATE")
         else:
             signal = "SELL"
-            conf = p_sell
-            quality = "HIGH" if p_sell >= 65.0 else ("MEDIUM" if p_sell >= 55.0 else "MODERATE")
+            conf = round(dir_sell, 1)
+            quality = "HIGH" if dir_sell >= 65.0 else ("MEDIUM" if dir_sell >= 60.0 else "MODERATE")
 
         if conf >= 75.0:
             bucket = "75%+"
@@ -326,6 +354,15 @@ def predict_batch(
                 "buy": float(round(p_buy / 100.0, 4)),
                 "sell": float(round(p_sell / 100.0, 4)),
                 "no_trade": float(round(p_no_trade / 100.0, 4))
+            },
+            "probabilities_pct": {
+                "buy": round(p_buy, 1),
+                "sell": round(p_sell, 1),
+                "no_trade": round(p_no_trade, 1)
+            },
+            "directional_conviction": {
+                "buy": float(round(dir_buy, 1)),
+                "sell": float(round(dir_sell, 1))
             },
             "signal_quality": quality
         })

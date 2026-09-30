@@ -12,8 +12,8 @@ from model import load_model, predict_batch, CLASS_BUY, CLASS_SELL, CLASS_NO_TRA
 def run_walk_forward_backtest(
     symbol: str,
     timeframe: str = '5m',
-    total_candles: int = 3500,
-    k_factor: float = 0.20,
+    total_candles: int = 5000,
+    k_factor: float = 0.30,
     n_splits: int = 4
 ) -> Optional[Dict[str, Any]]:
     """
@@ -41,8 +41,10 @@ def run_walk_forward_backtest(
     model_name = f"{symbol}_{timeframe}"
     model, features, meta = load_model(model_name)
 
-    if not model or not features:
-        print(f"[*] Model {model_name} not found in cache. Training initial model...")
+    # Force retrain if stale model or non-stationary features detected
+    needs_train = (not model or not features or 'EMA_20' in features or (meta and meta.get('dataset_rows', 0) < 3000))
+    if needs_train:
+        print(f"[*] Training/Updating canonical model {model_name} with {total_candles} real candles...")
         model = run_training(symbol, timeframe, limit=total_candles, k_factor=k_factor)
         model, features, meta = load_model(model_name)
 
@@ -58,7 +60,7 @@ def run_walk_forward_backtest(
     print(f"[*] Dataset: {total_samples} total candles | Out-Of-Sample Test Set: {len(df_oos)} candles.")
 
     # High-speed vectorized prediction across out-of-sample data
-    predictions = predict_batch(model, features, df_oos, confidence_threshold=0.52)
+    predictions = predict_batch(model, features, df_oos, confidence_threshold=0.58)
 
     y_true = df_oos['target'].to_numpy(dtype=int)
     future_rets = df_oos['future_return'].to_numpy(dtype=float)
@@ -249,7 +251,7 @@ if __name__ == "__main__":
     all_results = []
     for sym, tf in benchmark_markets:
         try:
-            res = run_walk_forward_backtest(sym, tf, total_candles=3500)
+            res = run_walk_forward_backtest(sym, tf, total_candles=5000)
             if res:
                 all_results.append(res)
         except Exception as e:

@@ -13,6 +13,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; InstitutionalTradingAI/3.0)"})
 
+TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "4a3bb708bb7247528d0efe958476bdaa")
+
 # Cached CCXT exchange instance
 EXCHANGE_INSTANCE: Optional[ccxt.binance] = None
 
@@ -24,14 +26,15 @@ def get_ccxt_exchange() -> ccxt.binance:
 
 def normalize_symbol(symbol: str) -> Dict[str, Any]:
     """
-    Unified normalization of symbol identifiers across Binance, CCXT, Yahoo.
+    Unified normalization of symbol identifiers across Binance, TwelveData, CCXT, Yahoo.
     """
     raw = symbol.upper().replace("/", "").replace(" ", "").replace("-", "")
 
-    # Forex mapping
+    # Forex mapping (TwelveData provides interbank live forex)
     if raw in ["EURUSD", "EURUSDT"]:
         return {
             "binance": "EURUSDT",
+            "twelvedata": "EUR/USD",
             "ccxt": "EUR/USDT",
             "yahoo": "EURUSD=X",
             "base_price": 1.0850,
@@ -40,6 +43,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["GBPUSD", "GBPUSDT"]:
         return {
             "binance": "GBPUSDT",
+            "twelvedata": "GBP/USD",
             "ccxt": "GBP/USDT",
             "yahoo": "GBPUSD=X",
             "base_price": 1.2850,
@@ -48,6 +52,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["USDJPY", "USDJPYT"]:
         return {
             "binance": "USDJPY",
+            "twelvedata": "USD/JPY",
             "ccxt": "USD/JPY",
             "yahoo": "USDJPY=X",
             "base_price": 158.0,
@@ -56,6 +61,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["AUDUSD", "AUDUSDT"]:
         return {
             "binance": "AUDUSDT",
+            "twelvedata": "AUD/USD",
             "ccxt": "AUD/USDT",
             "yahoo": "AUDUSD=X",
             "base_price": 0.7040,
@@ -64,33 +70,39 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["USDCHF", "USDCHFT"]:
         return {
             "binance": "USDCHF",
+            "twelvedata": "USD/CHF",
             "ccxt": "USD/CHF",
             "yahoo": "USDCHF=X",
             "base_price": 0.8250,
             "is_forex": True
         }
 
-    # Gold / Commodities mapping (Binance spot gold is PAXGUSDT)
+    # Gold / Commodities mapping
     if raw in ["XAUUSD", "XAUTUSDC", "XAUTUSDT", "PAXGUSDT", "GOLD"]:
         return {
             "binance": "PAXGUSDT",
             "binance_alt": "XAUTUSDT",
+            "twelvedata": "XAU/USD",
             "ccxt": "PAXG/USDT",
             "yahoo": "GC=F",
-            "base_price": 4140.0,
-            "is_forex": False
+            "base_price": 4180.0,
+            "is_forex": False,
+            "is_metals": True
         }
     if raw in ["XAGUSD", "SILVER"]:
         return {
             "binance": "XAGUSDT",
+            "twelvedata": "XAG/USD",
             "ccxt": "XAG/USDT",
             "yahoo": "SI=F",
             "base_price": 64.5,
-            "is_forex": False
+            "is_forex": False,
+            "is_metals": True
         }
     if raw in ["WTIUSD", "OIL", "CRUDEOIL"]:
         return {
             "binance": "WTIUSDT",
+            "twelvedata": "WTI/USD",
             "ccxt": "WTI/USDT",
             "yahoo": "CL=F",
             "base_price": 92.8,
@@ -101,6 +113,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["BTCUSD", "BTCUSDT"]:
         return {
             "binance": "BTCUSDT",
+            "twelvedata": "BTC/USD",
             "ccxt": "BTC/USDT",
             "yahoo": "BTC-USD",
             "base_price": 84500.0,
@@ -109,6 +122,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["ETHUSD", "ETHUSDT"]:
         return {
             "binance": "ETHUSDT",
+            "twelvedata": "ETH/USD",
             "ccxt": "ETH/USDT",
             "yahoo": "ETH-USD",
             "base_price": 2660.0,
@@ -117,6 +131,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["SOLUSD", "SOLUSDT"]:
         return {
             "binance": "SOLUSDT",
+            "twelvedata": "SOL/USD",
             "ccxt": "SOL/USDT",
             "yahoo": "SOL-USD",
             "base_price": 115.0,
@@ -125,6 +140,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["BNBUSD", "BNBUSDT"]:
         return {
             "binance": "BNBUSDT",
+            "twelvedata": "BNB/USD",
             "ccxt": "BNB/USDT",
             "yahoo": "BNB-USD",
             "base_price": 765.0,
@@ -133,6 +149,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     if raw in ["XRPUSD", "XRPUSDT"]:
         return {
             "binance": "XRPUSDT",
+            "twelvedata": "XRP/USD",
             "ccxt": "XRP/USDT",
             "yahoo": "XRP-USD",
             "base_price": 1.49,
@@ -144,6 +161,7 @@ def normalize_symbol(symbol: str) -> Dict[str, Any]:
     ccxt_sym = f"{bin_sym[:-4]}/USDT" if bin_sym.endswith("USDT") else f"{raw}/USDT"
     return {
         "binance": bin_sym,
+        "twelvedata": f"{raw[:-4]}/{raw[-4:]}" if len(raw) == 6 else raw,
         "ccxt": ccxt_sym,
         "yahoo": f"{raw}=X",
         "base_price": 100.0,
@@ -230,7 +248,14 @@ def load_cached_data(symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         try:
             df = pd.read_csv(path, compression='gzip')
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            return validate_ohlcv(df)
+            v_df = validate_ohlcv(df)
+            if v_df.empty:
+                return None
+            # Reject stale caches (>14 days old) to guarantee 100% current market training
+            newest_ts = v_df['timestamp'].max()
+            if newest_ts < pd.Timestamp.now() - pd.Timedelta(days=14):
+                return None
+            return v_df
         except Exception:
             return None
     return None
@@ -247,7 +272,7 @@ def save_cached_data(symbol: str, timeframe: str, df: pd.DataFrame):
 def fetch_historical_data(
     symbol: str,
     timeframe: str = '5m',
-    limit: int = 3500,
+    limit: int = 5000,
     use_cache: bool = True
 ) -> pd.DataFrame:
     """
@@ -260,13 +285,52 @@ def fetch_historical_data(
     if tf_clean in ["60m"]: tf_clean = "1h"
     elif tf_clean in ["240m"]: tf_clean = "4h"
 
-    # Check local cache first if sufficient candles available
+    # Check local cache first if sufficient fresh candles available
     if use_cache:
         cached_df = load_cached_data(symbol, tf_clean)
         if cached_df is not None and len(cached_df) >= limit:
             return cached_df.tail(limit).reset_index(drop=True)
 
-    # 1. Direct Binance Kline API with deep reverse pagination
+    is_forex = norm.get("is_forex", False)
+    is_metals = norm.get("is_metals", False)
+    td_sym = norm.get("twelvedata")
+
+    # Priority 1 for Forex & Metals: TwelveData (Genuine Live Interbank Feeds)
+    if (is_forex or is_metals) and td_sym and TWELVEDATA_API_KEY:
+        try:
+            td_int_map = {
+                "1m": "1min", "2m": "1min", "3m": "5min", "5m": "5min",
+                "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"
+            }
+            td_int = td_int_map.get(tf_clean, "5min")
+            url = f"https://api.twelvedata.com/time_series?symbol={td_sym}&interval={td_int}&outputsize={min(5000, limit)}&apikey={TWELVEDATA_API_KEY}"
+            resp = SESSION.get(url, timeout=12)
+            if resp.status_code == 200:
+                raw_d = resp.json()
+                if "values" in raw_d and isinstance(raw_d["values"], list) and raw_d["values"]:
+                    rows = []
+                    for v in raw_d["values"]:
+                        rows.append((
+                            pd.to_datetime(v["datetime"]),
+                            float(v["open"]),
+                            float(v["high"]),
+                            float(v["low"]),
+                            float(v["close"]),
+                            float(v.get("volume", 1000.0) or 1000.0)
+                        ))
+                    if rows:
+                        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df = validate_ohlcv(df)
+                        # Check freshness (within 14 days)
+                        if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                            if len(df) >= min(100, limit // 4):
+                                if use_cache:
+                                    save_cached_data(symbol, tf_clean, df)
+                                return df.tail(limit).reset_index(drop=True)
+        except Exception:
+            pass
+
+    # Priority 1 for Crypto (and fallback for others): Binance Kline API with deep reverse pagination
     bin_symbols_to_try = [norm["binance"]]
     if "binance_alt" in norm:
         bin_symbols_to_try.append(norm["binance_alt"])
@@ -307,14 +371,50 @@ def fetch_historical_data(
             if all_rows:
                 df = pd.DataFrame(all_rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df = validate_ohlcv(df)
-                if len(df) >= min(100, limit // 4):
-                    if use_cache:
-                        save_cached_data(symbol, tf_clean, df)
-                    return df.tail(limit).reset_index(drop=True)
+                # Check freshness: reject delisted pairs with stale data > 14 days
+                if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                    if len(df) >= min(100, limit // 4):
+                        if use_cache:
+                            save_cached_data(symbol, tf_clean, df)
+                        return df.tail(limit).reset_index(drop=True)
         except Exception:
             pass
 
-    # 2. CCXT Exchange Fallback
+    # Fallback to TwelveData for Crypto if Binance fails
+    if td_sym and TWELVEDATA_API_KEY:
+        try:
+            td_int_map = {
+                "1m": "1min", "2m": "1min", "3m": "5min", "5m": "5min",
+                "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"
+            }
+            td_int = td_int_map.get(tf_clean, "5min")
+            url = f"https://api.twelvedata.com/time_series?symbol={td_sym}&interval={td_int}&outputsize={min(5000, limit)}&apikey={TWELVEDATA_API_KEY}"
+            resp = SESSION.get(url, timeout=12)
+            if resp.status_code == 200:
+                raw_d = resp.json()
+                if "values" in raw_d and isinstance(raw_d["values"], list) and raw_d["values"]:
+                    rows = []
+                    for v in raw_d["values"]:
+                        rows.append((
+                            pd.to_datetime(v["datetime"]),
+                            float(v["open"]),
+                            float(v["high"]),
+                            float(v["low"]),
+                            float(v["close"]),
+                            float(v.get("volume", 1000.0) or 1000.0)
+                        ))
+                    if rows:
+                        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df = validate_ohlcv(df)
+                        if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                            if len(df) >= min(100, limit // 4):
+                                if use_cache:
+                                    save_cached_data(symbol, tf_clean, df)
+                                return df.tail(limit).reset_index(drop=True)
+        except Exception:
+            pass
+
+    # 3. CCXT Exchange Fallback
     try:
         exchange = get_ccxt_exchange()
         formatted_symbol = norm["ccxt"]
@@ -336,14 +436,15 @@ def fetch_historical_data(
             df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df = validate_ohlcv(df)
-            if len(df) >= min(100, limit // 4):
-                if use_cache:
-                    save_cached_data(symbol, tf_clean, df)
-                return df.tail(limit).reset_index(drop=True)
+            if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                if len(df) >= min(100, limit // 4):
+                    if use_cache:
+                        save_cached_data(symbol, tf_clean, df)
+                    return df.tail(limit).reset_index(drop=True)
     except Exception:
         pass
 
-    # 3. Yahoo Finance Fallback
+    # 4. Yahoo Finance Fallback
     try:
         y_sym = norm["yahoo"]
         y_int = "1m" if tf_clean in ["1m", "2m"] else "5m" if tf_clean in ["3m", "5m"] else "15m" if tf_clean in ["15m", "30m"] else "60m" if tf_clean in ["1h", "4h"] else "1d"
@@ -372,10 +473,11 @@ def fetch_historical_data(
                 if rows:
                     df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df = validate_ohlcv(df)
-                    if len(df) >= min(100, limit // 4):
-                        if use_cache:
-                            save_cached_data(symbol, tf_clean, df)
-                        return df.tail(limit).reset_index(drop=True)
+                    if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                        if len(df) >= min(100, limit // 4):
+                            if use_cache:
+                                save_cached_data(symbol, tf_clean, df)
+                            return df.tail(limit).reset_index(drop=True)
     except Exception:
         pass
 

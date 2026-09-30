@@ -6,7 +6,7 @@ from dataset import fetch_historical_data
 from feature_engine import generate_features
 from model import train_model
 
-def prepare_target(df: pd.DataFrame, k_factor: float = 0.20) -> pd.DataFrame:
+def prepare_target(df: pd.DataFrame, k_factor: float = 0.30) -> pd.DataFrame:
     """
     3-Class Target Formulation (Rule 5 & 6):
     - Future Return: (next_close - current_close) / current_close
@@ -42,8 +42,8 @@ def prepare_target(df: pd.DataFrame, k_factor: float = 0.20) -> pd.DataFrame:
 def run_training(
     symbol: str,
     timeframe: str = '5m',
-    limit: int = 3500,
-    k_factor: float = 0.20
+    limit: int = 5000,
+    k_factor: float = 0.30
 ) -> Optional[Any]:
     print(f"\n=================================================================")
     print(f"  Training Canonical 3-Class AI Model: {symbol} ({timeframe})")
@@ -78,12 +78,12 @@ def run_training(
     return model
 
 if __name__ == "__main__":
-    markets = ["BTCUSDT", "PAXGUSDT", "EURUSD", "GBPUSD", "ETHUSDT"]
-    timeframes = ["5m", "15m", "1h", "1m"]
+    markets = ["BTCUSDT", "PAXGUSDT", "EURUSD", "GBPUSD"]
+    timeframes = ["5m", "15m", "1m"]
 
     for m in markets:
         for tf in timeframes:
             try:
-                run_training(m, tf, limit=3500)
+                run_training(m, tf, limit=5000, k_factor=0.30)
             except Exception as e:
                 print(f"[-] Error training {m}_{tf}: {e}")
