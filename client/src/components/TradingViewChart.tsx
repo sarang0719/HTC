@@ -100,46 +100,63 @@ function TradingViewChart({
   timeframe = "1m",
   height = "100%",
 }: TradingViewChartProps) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const tvSym = resolveTradingViewSymbol(symbol);
   const tvInterval = TV_INTERVAL[timeframe] ?? TV_INTERVAL[timeframe.toLowerCase()] ?? "1";
 
   useEffect(() => {
-    return () => {
-      // Clean teardown before DOM removal to avoid abrupt Safari WebSocket drop
-      if (iframeRef.current) {
-        try {
-          iframeRef.current.src = "about:blank";
-        } catch {}
-      }
-    };
-  }, []);
+    const container = containerRef.current;
+    if (!container) return;
+    container.innerHTML = "";
 
-  const iframeSrc = useMemo(() => {
-    const params = new URLSearchParams({
-      symbol:           tvSym,
-      interval:         tvInterval,
-      theme:            "dark",
-      style:            "1",
-      locale:           "en",
-      toolbar_bg:       "#0B1120",
-      backgroundColor:  "#0B1120",
-      gridColor:        "rgba(255,255,255,0.04)",
-      hide_top_toolbar: "0",
-      hide_legend:      "0",
-      hide_side_toolbar:"1",
-      allow_symbol_change: "0",
-      save_image:       "0",
-      withdateranges:   "0",
-      hide_volume:      "0",
-      support_host:     "https://www.tradingview.com",
+    const widgetContainer = document.createElement("div");
+    widgetContainer.className = "tradingview-widget-container";
+    widgetContainer.style.height = "100%";
+    widgetContainer.style.width = "100%";
+
+    const widgetDiv = document.createElement("div");
+    widgetDiv.className = "tradingview-widget-container__widget";
+    widgetDiv.style.height = "100%";
+    widgetDiv.style.width = "100%";
+    widgetContainer.appendChild(widgetDiv);
+
+    const script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: tvSym,
+      interval: tvInterval,
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      backgroundColor: "#0B1120",
+      gridColor: "rgba(255,255,255,0.04)",
+      hide_top_toolbar: false,
+      hide_legend: false,
+      hide_side_toolbar: true,
+      allow_symbol_change: false,
+      save_image: false,
+      calendar: false,
+      support_host: "https://www.tradingview.com"
     });
 
-    return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
+    widgetContainer.appendChild(script);
+    container.appendChild(widgetContainer);
+
+    return () => {
+      if (container) {
+        container.innerHTML = "";
+      }
+    };
   }, [tvSym, tvInterval]);
 
   return (
     <div
+      ref={containerRef}
+      key={`${tvSym}_${tvInterval}`}
       style={{
         width: "100%",
         height,
@@ -148,22 +165,7 @@ function TradingViewChart({
         overflow: "hidden",
         backgroundColor: "#0B1120"
       }}
-    >
-      <iframe
-        ref={iframeRef}
-        key={`${tvSym}_${tvInterval}`}
-        src={iframeSrc}
-        style={{
-          width: "100%",
-          height: "100%",
-          border: "none",
-          display: "block",
-          backgroundColor: "#0B1120",
-        }}
-        allowFullScreen
-        title="TradingView Pro Chart"
-      />
-    </div>
+    />
   );
 }
 

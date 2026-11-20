@@ -79,12 +79,25 @@
         if (typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined') {
           var _OrigWS = window.WebSocket;
           var WrappedWebSocket = function(url, protocols) {
-            var instance = protocols !== undefined ? new _OrigWS(url, protocols) : new _OrigWS(url);
-            if (typeof url === 'string' && (url.indexOf('tradingview') !== -1 || url.indexOf('pushstream') !== -1)) {
-              instance.addEventListener('error', function(e) {
-                e.stopImmediatePropagation();
-              }, true);
+            var strUrl = typeof url === 'string' ? url : (url && url.href ? url.href : String(url));
+            if (strUrl.indexOf('pushstream') !== -1) {
+              var mockWs = {
+                readyState: 3, // CLOSED
+                url: strUrl,
+                bufferedAmount: 0,
+                onopen: null,
+                onclose: null,
+                onerror: null,
+                onmessage: null,
+                close: function() {},
+                send: function() {},
+                addEventListener: function() {},
+                removeEventListener: function() {},
+                dispatchEvent: function() { return false; }
+              };
+              return mockWs;
             }
+            var instance = protocols !== undefined ? new _OrigWS(url, protocols) : new _OrigWS(url);
             return instance;
           };
           WrappedWebSocket.prototype = _OrigWS.prototype;
