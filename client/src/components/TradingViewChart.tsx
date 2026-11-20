@@ -1,12 +1,15 @@
-import { useMemo } from "react";
+import { useMemo, memo, useEffect, useRef } from "react";
 
 // ── Symbol mapping: internal → TradingView ────────────────────────────────
 const TV_SYMBOL: Record<string, string> = {
   // Crypto (Binance)
-  BTCUSD:   "BINANCE:BTCUSDPERP",
+  BTCUSD:   "BINANCE:BTCUSDT",
   BTCUSDT:  "BINANCE:BTCUSDT",
+  ETHUSD:   "BINANCE:ETHUSDT",
   ETHUSDT:  "BINANCE:ETHUSDT",
+  BNBUSD:   "BINANCE:BNBUSDT",
   BNBUSDT:  "BINANCE:BNBUSDT",
+  SOLUSD:   "BINANCE:SOLUSDT",
   SOLUSDT:  "BINANCE:SOLUSDT",
   XRPUSDT:  "BINANCE:XRPUSDT",
   ADAUSDT:  "BINANCE:ADAUSDT",
@@ -23,10 +26,16 @@ const TV_SYMBOL: Record<string, string> = {
   PEPEUSDT: "BINANCE:PEPEUSDT",
   NEARUSDT: "BINANCE:NEARUSDT",
   // Metals & Commodities
-  XAUUSD:   "TVC:GOLD",
-  XAGUSD:   "TVC:SILVER",
+  XAUUSD:   "BINANCE:PAXGUSDT",
+  GOLD:     "BINANCE:PAXGUSDT",
+  PAXGUSDT: "BINANCE:PAXGUSDT",
+  PAXGUSD:  "BINANCE:PAXGUSDT",
+  XAGUSD:   "OANDA:XAGUSD",
+  SILVER:   "OANDA:XAGUSD",
   WTIUSD:   "TVC:USOIL",
+  USOIL:    "TVC:USOIL",
   BRENTUSD: "TVC:UKOIL",
+  UKOIL:    "TVC:UKOIL",
   // Forex
   EURUSD:   "FX:EURUSD",
   GBPUSD:   "FX:GBPUSD",
@@ -59,12 +68,26 @@ const TV_INTERVAL: Record<string, string> = {
   "5m":  "5",
   "15m": "15",
   "30m": "30",
+  "1h":  "60",
   "1H":  "60",
+  "4h":  "240",
   "4H":  "240",
+  "1d":  "D",
   "1D":  "D",
+  "1w":  "W",
   "1W":  "W",
   "1M":  "M",
 };
+
+function resolveTradingViewSymbol(rawSym: string): string {
+  if (!rawSym) return "BINANCE:BTCUSDT";
+  const sym = rawSym.toUpperCase().replace(/[-/_ ]/g, "");
+  if (TV_SYMBOL[sym]) return TV_SYMBOL[sym];
+  if (TV_SYMBOL[rawSym]) return TV_SYMBOL[rawSym];
+  if (sym.endsWith("USDT")) return `BINANCE:${sym}`;
+  if (sym.endsWith("USD")) return `BINANCE:${sym}T`;
+  return `BINANCE:${sym}USDT`;
+}
 
 interface TradingViewChartProps {
   symbol: string;
@@ -72,22 +95,32 @@ interface TradingViewChartProps {
   height?: number | string;
 }
 
-export default function TradingViewChart({
+function TradingViewChart({
   symbol,
   timeframe = "1m",
   height = "100%",
 }: TradingViewChartProps) {
-  // Build iframe URL from TradingView widgetembed
-  const iframeSrc = useMemo(() => {
-    const tvSym      = TV_SYMBOL[symbol] ?? `BINANCE:${symbol}`;
-    const tvInterval = TV_INTERVAL[timeframe] ?? "1";
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const tvSym = resolveTradingViewSymbol(symbol);
+  const tvInterval = TV_INTERVAL[timeframe] ?? TV_INTERVAL[timeframe.toLowerCase()] ?? "1";
 
+  useEffect(() => {
+    return () => {
+      // Clean teardown before DOM removal to avoid abrupt Safari WebSocket drop
+      if (iframeRef.current) {
+        try {
+          iframeRef.current.src = "about:blank";
+        } catch {}
+      }
+    };
+  }, []);
+
+  const iframeSrc = useMemo(() => {
     const params = new URLSearchParams({
-      frameElementId:   `tv_chart_${symbol}`,
       symbol:           tvSym,
       interval:         tvInterval,
       theme:            "dark",
-      style:            "1",          // 1 = Candles
+      style:            "1",
       locale:           "en",
       toolbar_bg:       "#0B1120",
       backgroundColor:  "#0B1120",
@@ -99,22 +132,26 @@ export default function TradingViewChart({
       save_image:       "0",
       withdateranges:   "0",
       hide_volume:      "0",
-      details:          "0",
-      hotlist:          "0",
-      calendar:         "0",
-      studies:          "[]",
-      watchlist:        "[]",
+      support_host:     "https://www.tradingview.com",
     });
 
     return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
-  }, [symbol, timeframe]);
+  }, [tvSym, tvInterval]);
 
   return (
     <div
-      style={{ width: "100%", height, minHeight: 0, position: "relative" }}
+      style={{
+        width: "100%",
+        height,
+        minHeight: 0,
+        position: "relative",
+        overflow: "hidden",
+        backgroundColor: "#0B1120"
+      }}
     >
       <iframe
-        id={`tv_chart_${symbol}`}
+        ref={iframeRef}
+        key={`${tvSym}_${tvInterval}`}
         src={iframeSrc}
         style={{
           width: "100%",
@@ -124,11 +161,10 @@ export default function TradingViewChart({
           backgroundColor: "#0B1120",
         }}
         allowFullScreen
-        allow="fullscreen"
-        title="Live Market Chart"
-        loading="eager"
-        referrerPolicy="no-referrer-when-downgrade"
+        title="TradingView Pro Chart"
       />
     </div>
   );
 }
+
+export default memo(TradingViewChart);

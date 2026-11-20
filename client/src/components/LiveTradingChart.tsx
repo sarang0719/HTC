@@ -145,14 +145,6 @@ const TF_SECS: Record<string, number> = {
   "1m": 60, "2m": 120, "3m": 180, "5m": 300, "15m": 900,
   "30m": 1800, "1H": 3600, "1h": 3600, "4H": 14400, "4h": 14400, "1D": 86400, "1d": 86400,
 };
-const TF_BIN: Record<string, string> = {
-  "1m": "1m", "2m": "1m", "3m": "3m", "5m": "5m",
-  "15m": "15m", "30m": "30m", "1H": "1h", "1h": "1h", "4H": "4h", "4h": "4h", "1D": "1d", "1d": "1d",
-};
-const TF_TWELVE: Record<string, string> = {
-  "1m": "1min", "2m": "1min", "3m": "5min", "5m": "5min",
-  "15m": "15min", "30m": "30min", "1H": "1h", "1h": "1h", "4H": "4h", "4h": "4h", "1D": "1day", "1d": "1day",
-};
 
 const bucketTime = (secs: number, candleSecs: number): UTCTimestamp =>
   (Math.floor(secs / candleSecs) * candleSecs) as UTCTimestamp;
@@ -174,6 +166,16 @@ function LiveTradingChartComponent({
   symbol, exchange, assetClass, timeframe, onPriceUpdate, onCandleUpdate, priceLevels = [], activeIndicators = [],
 }: LiveTradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const symUpper = symbol.toUpperCase();
+  const isCryptoAsset = (
+    assetClass === "CRYPTO" ||
+    exchange === "BINANCE" ||
+    symUpper.endsWith("USDT") ||
+    symUpper.endsWith("USDC") ||
+    ["BTCUSD", "ETHUSD", "SOLUSD", "BNBUSD", "XRPUSD", "ADAUSD", "DOGEUSD", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"].includes(symUpper) ||
+    (symUpper.endsWith("USD") && !["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF", "GBPJPY", "USDCAD", "USDPKR", "USDINR", "CADCHF", "XAUUSD", "XAGUSD", "WTIUSD", "BRENTUSD"].includes(symUpper))
+  ) && !["XAUUSD", "GOLD", "XAGUSD", "SILVER", "WTIUSD", "BRENTUSD"].includes(symUpper);
+
   // Track drawn price lines so we can remove old ones
   const drawnLinesRef = useRef<Map<number, any>>(new Map());
 
@@ -205,7 +207,6 @@ function LiveTradingChartComponent({
   const historyRef      = useRef<CandleOHLC[]>([]);
   const lastPriceLineColorRef = useRef<string>("");
   const lastUiUpdateRef = useRef<number>(0);
-  const serverTimeOffsetRef = useRef<number>(0);
 
   // ── UI state (minimal re-renders) ─────────────────────────────────────────
   const [displayPrice, setDisplayPrice]   = useState(0);
@@ -230,7 +231,7 @@ function LiveTradingChartComponent({
       high: Math.max(c.open, c.close, c.high),
       low:  Math.min(c.open, c.close, c.low),
     };
-    const hist = [...historyRef.current];
+    const hist = historyRef.current;
     let isNewCandle = false;
 
     if (hist.length === 0) {
@@ -248,7 +249,6 @@ function LiveTradingChartComponent({
         hist[hist.length - 1] = sanitized;
       }
     }
-    historyRef.current = hist;
 
     // CRITICAL: Indicators (SMA, EMA, RSI, MACD) and candle-close callbacks ONLY update
     // when a new candle begins. Calling setData on every micro-tick resets auto-scaling bounds
@@ -326,49 +326,49 @@ function LiveTradingChartComponent({
   // ── Core: update active candle on each tick ───────────────────────────────
   // Stored in a ref (not useCallback) so it never changes identity → won't trigger effect re-run
   const updateCandleRef = useRef((price: number) => {
-    if (!candleRef.current || price <= 0) return;
+    if (!candleRef.current || price <= 0 || isNaN(price)) return;
 
-    // Outlier filter: if tick price deviates > 15% from current candle open, ignore tick to prevent seed price wicks
-    if (liveCandle.current && liveCandle.current.open > 0) {
-      const dev = Math.abs(price - liveCandle.current.open) / liveCandle.current.open;
-      if (dev > 0.15) return;
-    }
-
-    const nowMs      = Date.now() + serverTimeOffsetRef.current;
-    const nowSec     = Math.floor(nowMs / 1000);
+    const nowSec     = Math.floor(Date.now() / 1000);
     const candleSecs = candleSecsRef.current || 60;
-    let bucket       = bucketTime(nowSec, candleSecs);
+    const bucket     = bucketTime(nowSec, candleSecs);
     let candle       = liveCandle.current;
 
-    // Time alignment: If client clock is slightly behind exchange/server clock,
-    // ensure bucket is at least equal to lastHist.time so candles never freeze or get dropped!
-    const hist = historyRef.current;
-    const lastHist = hist.length > 0 ? hist[hist.length - 1] : null;
-    if (lastHist && bucket < (lastHist.time as number)) {
-      bucket = lastHist.time as UTCTimestamp;
-    }
-
     if (!candle || bucket > candle.time) {
-      const open = (candle && candle.close > 0 && bucket > candle.time) ? candle.close : price;
-      candle = { time: bucket, open, high: Math.max(open, price), low: Math.min(open, price), close: price, volume: 1 };
+      // Previous candle closes cleanly; new candle opens at previous close
+      const open = (candle && candle.close > 0) ? candle.close : price;
+      candle = {
+        time: bucket,
+        open,
+        high: Math.max(open, price),
+        low:  Math.min(open, price),
+        close: price,
+        volume: 1
+      };
       liveCandle.current = candle;
       try {
-        chartRef.current?.timeScale().scrollToRealTime();
+        chartRef.current?.timeScale().scrollToPosition(8, false);
       } catch {}
     } else {
+      // Intra-candle update for current bucket
       candle.close = price;
-      candle.high  = Math.max(candle.high, candle.open, price);
-      candle.low   = Math.min(candle.low,  candle.open, price);
+      candle.high  = Math.max(candle.high, price);
+      candle.low   = Math.min(candle.low,  price);
       if (candle.volume !== undefined) candle.volume += 1;
     }
 
     try {
-      const priceLineColor = price >= (candle.open || price) ? "#00e676" : "#ff5252";
+      const priceLineColor = candle.close >= candle.open ? "#00e676" : "#ff5252";
       if (lastPriceLineColorRef.current !== priceLineColor) {
         lastPriceLineColorRef.current = priceLineColor;
         candleRef.current?.applyOptions({ priceLineColor });
       }
-      candleRef.current?.update({ time: candle.time, open: candle.open, high: candle.high, low: candle.low, close: candle.close });
+      candleRef.current?.update({
+        time: candle.time,
+        open: candle.open,
+        high: candle.high,
+        low:  candle.low,
+        close: candle.close
+      });
       liveLineRef.current?.update({ time: candle.time, value: price });
     } catch (err) { /* ignore */ }
 
@@ -378,26 +378,15 @@ function LiveTradingChartComponent({
   // ── Accept external price tick (called by WS / poller) ───────────────────
   // Also a stable ref — never changes identity, never triggers effect re-run
   const onTickRef = useRef((rawPrice: number) => {
-    if (!rawPrice || rawPrice <= 0) return;
+    if (!rawPrice || rawPrice <= 0 || isNaN(rawPrice)) return;
     const prev = prevPriceRef.current;
     
-    // Check against history close if available to reject corrupted seed ticks
-    const hist = historyRef.current;
-    const lastHist = hist.length > 0 ? hist[hist.length - 1] : null;
-    if (lastHist && lastHist.close > 0) {
-      const devFromHist = Math.abs(rawPrice - lastHist.close) / lastHist.close;
-      if (devFromHist > 0.25) return; // Ignore ticks >25% divergent from actual candle history
-    }
-
+    // Sanity check: reject extreme anomalous price spikes (>35% single-tick outlier jump)
     if (prev > 0) {
       const devFromPrev = Math.abs(rawPrice - prev) / prev;
-      if (devFromPrev > 0.15) {
-        // If tick is consistent with history, reset prev instead of dropping
-        if (lastHist && Math.abs(rawPrice - lastHist.close) / lastHist.close < 0.10) {
-          prevPriceRef.current = rawPrice;
-        } else {
-          return;
-        }
+      if (devFromPrev > 0.35) {
+        // Drop rogue out-of-band spike tick to preserve clean candlestick geometry
+        return;
       }
     }
 
@@ -433,21 +422,24 @@ function LiveTradingChartComponent({
   useEffect(() => {
     if (!containerRef.current) return;
     let isActive = true;
-    let ws: WebSocket | null = null;
     let localWs: WebSocket | null = null;
+    let localHeartbeatTimer: any = null;
+    let reconnectTimer: any = null;
     let poller: ReturnType<typeof setInterval> | null = null;
-    let wsReco: ReturnType<typeof setTimeout> | null = null;
-    let wsInitTimer: ReturnType<typeof setTimeout> | null = null;
     let countdownTimer: ReturnType<typeof setInterval> | null = null;
-    let wsDelay = 1000;
     candleSecsRef.current = TF_SECS[timeframe] ?? 60;
-    // Binance WS delivers real per-second OHLC for Cryptos & Gold (PAXGUSDT / XAUUSD / BTCUSD)
-    const isCrypto = (exchange === "BINANCE" || symbol === "BTCUSD" || symbol === "BTCUSDT" || symbol === "XAUUSD" || symbol === "PAXGUSDT" || symbol.endsWith("USDT") || symbol.endsWith("USDC")) &&
-      !["XAGUSD", "WTIUSD", "BRENTUSD"].includes(symbol);
+    const symUpper = symbol.toUpperCase();
+    // Binance WS / klines delivers real per-second OHLC for Cryptos
+    const isCrypto = (
+      exchange === "BINANCE" ||
+      symUpper.endsWith("USDT") ||
+      symUpper.endsWith("USDC") ||
+      ["BTCUSD", "ETHUSD", "SOLUSD", "BNBUSD", "XRPUSD", "ADAUSD", "DOGEUSD", "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"].includes(symUpper) ||
+      (symUpper.endsWith("USD") && !["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF", "GBPJPY", "USDCAD", "USDPKR", "USDINR", "CADCHF", "XAUUSD", "XAGUSD", "WTIUSD", "BRENTUSD"].includes(symUpper))
+    ) && !["XAUUSD", "GOLD", "XAGUSD", "SILVER", "WTIUSD", "BRENTUSD"].includes(symUpper);
     renderedPriceRef.current = 0;
     lastRenderTsRef.current = 0;
 
-    // ── 1. Create lightweight chart ──────────────────────────────────────────
     // ── 1. Create lightweight chart (Quotex exact design) ───────────────────
     const chart = createChart(containerRef.current, {
       layout: {
@@ -474,9 +466,11 @@ function LiveTradingChartComponent({
         borderColor:    "rgba(255,255,255,0.08)",
         timeVisible:    true,
         secondsVisible: false,
-        rightOffset:    5,
+        rightOffset:    8,
         barSpacing:     12, // Thicker candles exactly like Quotex
         minBarSpacing:  3,
+        shiftVisibleRangeOnNewBar: true,
+        allowShiftVisibleRangeOnWhitespaceReplacement: true,
       },
       autoSize: true,
     });
@@ -540,9 +534,6 @@ function LiveTradingChartComponent({
         });
         if (pr.ok) {
           const pd = await pr.json();
-          if (pd.asOf) {
-            serverTimeOffsetRef.current = new Date(pd.asOf).getTime() - Date.now();
-          }
           const liveP = parseFloat(pd.price);
           if (liveP > 0) {
             targetPriceRef.current  = liveP;
@@ -552,10 +543,11 @@ function LiveTradingChartComponent({
         }
       } catch {}
 
+      // 3a. Primary backend history request (High-speed server proxy with direct Binance & TwelveData access, zero CORS/ISP blocks)
       try {
         const res = await fetch(
           `/api/market-data/history/${symbol}?interval=${timeframe}`,
-          { signal: AbortSignal.timeout(6000) }
+          { signal: AbortSignal.timeout(4000) }
         );
         if (res.ok) {
           const data = await res.json();
@@ -567,14 +559,63 @@ function LiveTradingChartComponent({
         }
       } catch {}
 
-      // Fallback: If history endpoint failed or returned empty, generate clean base candles so chart is NEVER blank
+      // 3b. Secondary client-side direct Binance Kline Fetch for Cryptos & Gold if backend is unreachable
+      if (history.length === 0 && (isCrypto || ["XAUUSD", "GOLD", "PAXGUSD", "PAXGUSDT", "XAUTUSDT", "XAUTUSDC"].includes(symUpper))) {
+        try {
+          const binIntervalMap: any = {
+            "1m": "1m", "2m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1H": "1h", "4H": "4h", "1D": "1d", "1W": "1w", "1M": "1M"
+          };
+          const bInt = binIntervalMap[timeframe] || "1m";
+          let binSymbol = symUpper;
+          if (["XAUTUSDC", "XAUTUSDT", "PAXGUSDT", "PAXGUSD", "XAUUSD"].includes(symUpper)) binSymbol = "PAXGUSDT";
+          else if (symUpper === "BTCUSD" || symUpper === "BTCUSDT" || symUpper === "BTC") binSymbol = "BTCUSDT";
+          else if (symUpper === "ETHUSD" || symUpper === "ETHUSDT" || symUpper === "ETH") binSymbol = "ETHUSDT";
+          else if (symUpper === "SOLUSD" || symUpper === "SOLUSDT" || symUpper === "SOL") binSymbol = "SOLUSDT";
+          else if (symUpper === "BNBUSD" || symUpper === "BNBUSDT" || symUpper === "BNB") binSymbol = "BNBUSDT";
+          else if (symUpper === "XRPUSD" || symUpper === "XRPUSDT" || symUpper === "XRP") binSymbol = "XRPUSDT";
+          else if (symUpper === "ADAUSD" || symUpper === "ADAUSDT" || symUpper === "ADA") binSymbol = "ADAUSDT";
+          else if (symUpper === "DOGEUSD" || symUpper === "DOGEUSDT" || symUpper === "DOGE") binSymbol = "DOGEUSDT";
+          else if (symUpper.endsWith("USD") && !symUpper.endsWith("USDT") && !symUpper.endsWith("USDC")) binSymbol = `${symUpper.slice(0, -3)}USDT`;
+          else if (!symUpper.endsWith("USDT") && !symUpper.endsWith("USDC")) binSymbol = `${symUpper}USDT`;
+
+          const mirrors = [
+            `https://data-api.binance.vision/api/v3/klines?symbol=${binSymbol}&interval=${bInt}&limit=500`,
+            `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${bInt}&limit=500`,
+            `https://api1.binance.com/api/v3/klines?symbol=${binSymbol}&interval=${bInt}&limit=500`,
+          ];
+
+          for (const mUrl of mirrors) {
+            try {
+              const bRes = await fetch(mUrl, { signal: AbortSignal.timeout(2500) });
+              if (bRes.ok) {
+                const bData = await bRes.json();
+                if (Array.isArray(bData) && bData.length > 0) {
+                  history = bData.map((d: any) => ({
+                    time: Math.floor(d[0] / 1000) as UTCTimestamp,
+                    open: parseFloat(d[1]),
+                    high: parseFloat(d[2]),
+                    low: parseFloat(d[3]),
+                    close: parseFloat(d[4]),
+                    volume: parseFloat(d[5] || 0)
+                  }));
+                  break;
+                }
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+
+      // 3c. Fallback: Organic continuous Brownian random walk anchored strictly to live price (Zero gap, realistic financial movements)
       if (history.length === 0) {
-        const symUpper = symbol.toUpperCase();
         let fallbackBase = targetPriceRef.current > 0 ? targetPriceRef.current : 0;
         if (fallbackBase <= 0) {
-          if (symUpper.includes("XAU") || symUpper.includes("GOLD")) fallbackBase = 4151.0;
-          else if (symUpper.includes("BTC")) fallbackBase = 67200.0;
-          else if (symUpper.includes("ETH")) fallbackBase = 3500.0;
+          if (symUpper.includes("XAU") || symUpper.includes("PAXG") || symUpper.includes("GOLD")) fallbackBase = 3860.0;
+          else if (symUpper.includes("BTC")) fallbackBase = 66800.0;
+          else if (symUpper.includes("ETH")) fallbackBase = 3400.0;
+          else if (symUpper.includes("BNB")) fallbackBase = 740.0;
+          else if (symUpper.includes("SOL")) fallbackBase = 180.0;
           else if (symUpper.includes("EUR")) fallbackBase = 1.0850;
           else if (symUpper.includes("GBP")) fallbackBase = 1.2850;
           else fallbackBase = 100.0;
@@ -583,18 +624,27 @@ function LiveTradingChartComponent({
         const nowSec = Math.floor(Date.now() / 1000);
         const candleSecs = candleSecsRef.current || 60;
         const bucketedNow = Math.floor(nowSec / candleSecs) * candleSecs;
-        let cPrice = fallbackBase;
+        let currentLevel = fallbackBase;
         const generated: CandleOHLC[] = [];
+        const volatility = 0.0008; // 0.08% realistic bar volatility
 
         for (let i = 0; i < 80; i++) {
           const t = (bucketedNow - (i * candleSecs)) as UTCTimestamp;
-          const delta = (Math.sin(i * 0.4) + Math.cos(i * 0.7) * 0.5) * (fallbackBase * 0.0008);
-          const cl = Number(cPrice.toFixed(4));
-          const op = Number((cPrice - delta).toFixed(4));
-          const hi = Number((Math.max(op, cl) + Math.abs(delta) * 0.4).toFixed(4));
-          const lo = Number((Math.min(op, cl) - Math.abs(delta) * 0.4).toFixed(4));
-          generated.push({ time: t, open: op, high: hi, low: lo, close: cl, volume: 10 });
-          cPrice = op;
+          const shock = (Math.random() - 0.498) * volatility * currentLevel;
+          const op = currentLevel - shock;
+          const cl = currentLevel;
+          const wickSize = Math.random() * volatility * currentLevel * 0.5;
+          const hi = Math.max(op, cl) + wickSize;
+          const lo = Math.min(op, cl) - wickSize;
+          generated.push({
+            time: t,
+            open: Number(op.toFixed(4)),
+            high: Number(hi.toFixed(4)),
+            low: Number(lo.toFixed(4)),
+            close: Number(cl.toFixed(4)),
+            volume: Math.floor(Math.random() * 2500) + 500
+          });
+          currentLevel = op;
         }
         history = generated.reverse();
       }
@@ -613,11 +663,9 @@ function LiveTradingChartComponent({
         let rawLow = Number(c.low);
         let h = isNaN(rawHigh) ? Math.max(o, cl) : Math.max(o, cl, rawHigh);
         let l = isNaN(rawLow) ? Math.min(o, cl) : Math.min(o, cl, rawLow);
-
-        const minSpread = Math.max(0.0001, cl * 0.0001);
-        if (h <= l || Math.abs(h - l) < minSpread) {
-          h = Math.max(o, cl) + minSpread;
-          l = Math.min(o, cl) - minSpread;
+        if (h < l) {
+          h = Math.max(o, cl);
+          l = Math.min(o, cl);
         }
 
         sanitizedMap.set(t, {
@@ -630,9 +678,70 @@ function LiveTradingChartComponent({
         });
       }
 
-      const validHistory = Array.from(sanitizedMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+      const sortedHistory = Array.from(sanitizedMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+      const validHistory: CandleOHLC[] = [];
+      const candleSecs = candleSecsRef.current || 60;
+
+      for (let i = 0; i < sortedHistory.length; i++) {
+        const curr = sortedHistory[i];
+        if (validHistory.length > 0) {
+          const prev = validHistory[validHistory.length - 1];
+          const gapSecs = (curr.time as number) - (prev.time as number);
+          // If there is a missing candle gap between consecutive bars (up to 2 hours), forward-fill continuation bars
+          if (gapSecs > candleSecs && gapSecs <= candleSecs * 120) {
+            const missingSteps = Math.floor(gapSecs / candleSecs) - 1;
+            for (let s = 1; s <= missingSteps; s++) {
+              const bridgeTime = ((prev.time as number) + s * candleSecs) as UTCTimestamp;
+              const spread = Math.max(0.04, prev.close * 0.00008);
+              validHistory.push({
+                time: bridgeTime,
+                open: prev.close,
+                high: Number((prev.close + spread).toFixed(4)),
+                low: Number((prev.close - spread).toFixed(4)),
+                close: prev.close,
+                volume: 10
+              });
+            }
+          }
+        }
+        
+        // Ensure that zero-height flat doji bars have a visible micro-wick so they never look like invisible slits or gaps
+        if (curr.high <= curr.low || Math.abs(curr.high - curr.low) < 0.0001) {
+          const spread = Math.max(0.04, curr.close * 0.00008);
+          curr.high = Number((Math.max(curr.open, curr.close) + spread).toFixed(4));
+          curr.low = Number((Math.min(curr.open, curr.close) - spread).toFixed(4));
+        }
+
+        validHistory.push(curr);
+      }
 
       if (!isActive) return;
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const currentBucket = bucketTime(nowSec, candleSecs);
+
+      if (validHistory.length > 0) {
+        const lastBar = validHistory[validHistory.length - 1];
+        if ((lastBar.time as number) < currentBucket) {
+          // If historical feed ended before current minute bucket, seamlessly append open bar
+          const open = lastBar.close;
+          let livePrice = targetPriceRef.current > 0 ? targetPriceRef.current : open;
+          // Guard: If livePrice is wildly divergent from last closed bar (>2%), clamp to open to avoid initial bar spike
+          if (open > 0 && Math.abs(livePrice - open) / open > 0.02) {
+            livePrice = open;
+          }
+          const openCandle: CandleOHLC = {
+            time: currentBucket,
+            open,
+            high: Math.max(open, livePrice),
+            low:  Math.min(open, livePrice),
+            close: livePrice,
+            volume: 1
+          };
+          validHistory.push(openCandle);
+        }
+      }
+
       historyRef.current = validHistory;
 
       if (isActive && chartRef.current && candleRef.current && validHistory.length > 0) {
@@ -641,8 +750,15 @@ function LiveTradingChartComponent({
           liveLine.setData(validHistory.map(c => ({ time: c.time, value: c.close })));
           requestAnimationFrame(() => {
             try {
-              chart.timeScale().scrollToRealTime();
-            } catch {}
+              const totalBars = validHistory.length;
+              const barsToShow = Math.min(totalBars, 65);
+              chart.timeScale().setVisibleLogicalRange({
+                from: totalBars - barsToShow,
+                to: totalBars + 8,
+              });
+            } catch {
+              try { chart.timeScale().scrollToPosition(8, false); } catch {}
+            }
           });
         } catch (setErr) {
           console.error("[LiveTradingChart] Error setting history data:", setErr);
@@ -702,7 +818,6 @@ function LiveTradingChartComponent({
       const poll = async () => {
         if (!isActive) return;
         // Skip REST polling if live WebSocket feed is actively connected
-        if (ws && ws.readyState === WebSocket.OPEN) return;
         if (localWs && localWs.readyState === WebSocket.OPEN) return;
 
         try {
@@ -720,136 +835,78 @@ function LiveTradingChartComponent({
       if (!poller) poller = setInterval(poll, 1000);
 
       // ── Connect to Local Server WebSocket (Same-Origin, Zero ISP Blocks) ──
-      try {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const localWsUrl = `${protocol}//${window.location.host}/ws`;
-        localWs = new WebSocket(localWsUrl);
-        localWs.onopen = () => {
-          localWs?.send(JSON.stringify({ type: "subscribe", symbols: [symbol] }));
-        };
-        localWs.onmessage = (ev) => {
-          if (!isActive) return;
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.type === "market_data" && msg.symbol === symbol && msg.data?.price) {
-              const p = parseFloat(msg.data.price);
-              if (p > 0) {
-                onTickRef.current(p);
-                setIsConnected(true);
-              }
-            }
-          } catch {}
-        };
-        localWs.onerror = () => {};
-        localWs.onclose = () => {};
-      } catch {}
-
-      // ── Connect to Binance WebSocket for Cryptos & Gold (if available & not blocked) ──
-      const isBinanceBlocked = typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1";
-
-      if (isCrypto && !isBinanceBlocked && typeof navigator !== "undefined" && navigator.onLine) {
-        let wsSymbol = symbol.toLowerCase();
-        if (symbol === "BTCUSD" || symbol === "BTCUSDT") wsSymbol = "btcusdt";
-        else if (symbol === "ETHUSD" || symbol === "ETHUSDT") wsSymbol = "ethusdt";
-        else if (symbol === "SOLUSD" || symbol === "SOLUSDT") wsSymbol = "solusdt";
-        else if (symbol === "BNBUSD" || symbol === "BNBUSDT") wsSymbol = "bnbusdt";
-        else if (symbol === "XRPUSD" || symbol === "XRPUSDT") wsSymbol = "xrpusdt";
-        // On Binance WebSocket, Gold spot is mapped to PAXGUSDT stream (xautusdt does not have a kline stream)
-        else if (symbol === "XAUUSD" || symbol === "XAUTUSDC" || symbol === "XAUTUSDT" || symbol === "PAXGUSDT") wsSymbol = "paxgusdt";
-        else if (!wsSymbol.endsWith("usdt") && !wsSymbol.endsWith("usdc")) wsSymbol = `${wsSymbol}usdt`;
-
-        const interval = TF_BIN[timeframe] ?? "1m";
-
+      const connectLocalWs = () => {
+        if (!isActive) return;
         try {
-          const wsUrl = `wss://stream.binance.com:9443/stream?streams=${wsSymbol}@kline_${interval}/${wsSymbol}@miniTicker`;
-          ws = new WebSocket(wsUrl);
+          const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          const localWsUrl = `${protocol}//${window.location.host}/ws`;
+          localWs = new WebSocket(localWsUrl);
 
-          ws.onopen = () => { wsDelay = 1000; setIsConnected(true); };
-          ws.onmessage = (ev) => {
+          localWs.onopen = () => {
+            if (!isActive) {
+              try { localWs?.close(); } catch {}
+              return;
+            }
+            localWs?.send(JSON.stringify({ type: "subscribe", symbols: [symbol] }));
+            if (localHeartbeatTimer) clearInterval(localHeartbeatTimer);
+            localHeartbeatTimer = setInterval(() => {
+              if (localWs && localWs.readyState === WebSocket.OPEN) {
+                try { localWs.send(JSON.stringify({ type: "ping" })); } catch {}
+              }
+            }, 15000);
+          };
+
+          localWs.onmessage = (ev) => {
             if (!isActive) return;
             try {
-              const raw = JSON.parse(ev.data);
-              const data = raw.data || raw;
-              if (data.e === "24hrMiniTicker" && data.c) {
-                const close = parseFloat(data.c);
-                if (close > 0) onTickRef.current(close);
-              } else if (data.e === "kline" && data.k) {
-                const k = data.k;
-                const time = Math.floor(k.t / 1000) as UTCTimestamp;
-                const open = parseFloat(k.o);
-                const close = parseFloat(k.c);
-                const high = Math.max(open, close, parseFloat(k.h));
-                const low  = Math.min(open, close, parseFloat(k.l));
-                const volume = parseFloat(k.v || "0");
-                
-                if (candleRef.current && close > 0) {
-                  const hist = historyRef.current;
-                  const lastHist = hist.length > 0 ? hist[hist.length - 1] : null;
-                  if (!lastHist || time >= (lastHist.time as number)) {
-                    try {
-                      candleRef.current.update({ time, open, high, low, close });
-                      liveLineRef.current?.update({ time, value: close });
-                    } catch {}
-                    const candle = { time, open, high, low, close, volume };
-                    liveCandle.current = candle;
-                    appendOrUpdateCandle(candle);
-                  }
-                }
-                
-                targetPriceRef.current = close;
-                lastTickRef.current = Date.now();
-                const prev = prevPriceRef.current;
-                prevPriceRef.current = close;
-
-                const now = performance.now();
-                if (now - lastUiUpdateRef.current >= 100) {
-                  lastUiUpdateRef.current = now;
-                  setDisplayPrice(close);
-                  const dir: "up"|"down"|null = prev > 0 ? (close > prev ? "up" : close < prev ? "down" : null) : null;
-                  if (dir) {
-                    setPriceDir(dir);
-                    setFlashKey(k => (k + 1) % 1000);
-                  }
-                  onPriceUpdateRef.current?.(close, dir);
-                  setOhlcInfo({ o: open, h: high, l: low, c: close, v: volume });
+              const msg = JSON.parse(ev.data);
+              if (msg.type === "ping") {
+                localWs?.send(JSON.stringify({ type: "pong" }));
+              } else if (msg.type === "market_data" && msg.symbol === symbol && msg.data?.price) {
+                const p = parseFloat(msg.data.price);
+                if (p > 0) {
+                  onTickRef.current(p);
+                  setIsConnected(true);
                 }
               }
             } catch {}
           };
-          ws.onclose = () => {
-            if (!isActive) return;
-            if (typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1") return;
-            wsReco = setTimeout(() => { wsDelay = Math.min(wsDelay * 2, 30000); connectWS(); }, wsDelay);
-          };
-          ws.onerror = () => {
-            // If connection fails, disable Binance WS for session to avoid spamming console
-            if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-            if (ws) {
-              ws.onclose = null;
-              try { ws.close(); } catch {}
-              ws = null;
+
+          localWs.onerror = () => {};
+          localWs.onclose = () => {
+            if (localHeartbeatTimer) {
+              clearInterval(localHeartbeatTimer);
+              localHeartbeatTimer = null;
+            }
+            if (isActive) {
+              if (reconnectTimer) clearTimeout(reconnectTimer);
+              reconnectTimer = setTimeout(connectLocalWs, 3000);
             }
           };
-        } catch {
-          if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-        }
-      }
+        } catch {}
+      };
+      connectLocalWs();
     };
 
-    loadHistory();
-    startEngine();
-    connectWS();
+    const initChart = async () => {
+      await loadHistory();
+      if (!isActive) return;
+      startEngine();
+      connectWS();
+    };
+    initChart();
 
     return () => {
       isActive = false;
-      if (wsInitTimer)   clearTimeout(wsInitTimer);
-      if (wsReco)        clearTimeout(wsReco);
       if (poller)        clearInterval(poller);
       if (countdownTimer) clearInterval(countdownTimer);
-      if (ws) {
-        const socket = ws;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (localHeartbeatTimer) clearInterval(localHeartbeatTimer);
+      if (localWs) {
+        const socket = localWs;
         socket.onclose = null;
         socket.onerror = null;
+        socket.onmessage = null;
         if (socket.readyState === WebSocket.CONNECTING) {
           socket.onopen = () => {
             try { socket.close(); } catch {}
@@ -857,10 +914,6 @@ function LiveTradingChartComponent({
         } else if (socket.readyState === WebSocket.OPEN) {
           try { socket.close(); } catch {}
         }
-      }
-      if (localWs) {
-        localWs.onclose = null;
-        try { localWs.close(); } catch {}
         localWs = null;
       }
       try { chart.remove(); } catch {}
@@ -1000,17 +1053,7 @@ function LiveTradingChartComponent({
         })}
       </div>
 
-      {/* ── Candle countdown timer right on the price scale level ────────── */}
-      {countdown > 0 && !isLoading && (
-        <div className="absolute bottom-6 right-3 z-20 pointer-events-none">
-          <div className="flex items-center gap-2 bg-[#1e222d] border border-[#2962ff]/60 rounded-md px-2.5 py-1 shadow-[0_4px_12px_rgba(0,0,0,0.6)]">
-            <div className="w-1.5 h-1.5 rounded-full bg-[#2962ff] animate-ping" />
-            <span className="text-[11px] font-mono font-black text-white tabular-nums tracking-wider">
-              {fmtCountdown(countdown)}
-            </span>
-          </div>
-        </div>
-      )}
+
 
       {/* ── Price direction flash CSS ────────────────────────────────────── */}
       <style>{`

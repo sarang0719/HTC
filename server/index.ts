@@ -47,13 +47,14 @@ declare module "http" {
 
 app.use(
   express.json({
+    limit: "10mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -79,12 +80,16 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
+    if (path.startsWith("/api") && path !== "/api/instruments" && path !== "/ping" && path !== "/health") {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        try {
+          const str = typeof capturedJsonResponse === "string" ? capturedJsonResponse : JSON.stringify(capturedJsonResponse);
+          logLine += str.length > 100 ? ` :: [${str.slice(0, 80)}... (${str.length} bytes)]` : ` :: ${str}`;
+        } catch {
+          logLine += ` :: [Object]`;
+        }
       }
-
       log(logLine);
     }
   });
@@ -107,7 +112,9 @@ export const initAppPromise = (async () => {
     // Setup WebSocket server
     const wsManager = setupWebSocket(httpServer);
     httpServer.on('upgrade', (req, socket, head) => {
-      if (req.url === '/ws') {
+      const url = req.url || '';
+      const pathname = url.split('?')[0];
+      if (pathname === '/ws' || pathname === '/ws/') {
         wsManager.handleUpgrade(req, socket, head);
       }
     });
@@ -124,8 +131,8 @@ export const initAppPromise = (async () => {
     httpServer.keepAliveTimeout = 65000;
     httpServer.headersTimeout = 66000;
     if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
-      httpServer.listen({ port, host: "0.0.0.0" }, () => {
-        log(`serving on port ${port} [Ready for traffic]`);
+      httpServer.listen(port, () => {
+        log(`serving on port ${port} (IPv4 + IPv6 dual-stack) [Ready for traffic]`);
       });
     }
 
@@ -141,20 +148,28 @@ export const initAppPromise = (async () => {
            const { spawn } = await import("child_process");
            const fs = await import("fs");
            const path = await import("path");
-           const pythonPath = path.resolve(process.cwd(), "python-ai/venv/bin/python");
+           let pythonBin = process.env.PYTHON_BIN;
+           if (!pythonBin) {
+             const localVenv = path.resolve(process.cwd(), "python-ai/venv/bin/python");
+             if (fs.existsSync(localVenv)) {
+               pythonBin = localVenv;
+             } else {
+               pythonBin = "python3";
+             }
+           }
            const scriptPath = path.resolve(process.cwd(), "python-ai/api.py");
-           if (fs.existsSync(pythonPath) && fs.existsSync(scriptPath)) {
+           if (fs.existsSync(scriptPath)) {
              const pyPort = process.env.PYTHON_PORT || "8008";
-             fetch(`http://127.0.0.1:${pyPort}/docs`).then(res => {
+             fetch(`http://127.0.0.1:${pyPort}/health`).then(res => {
                if (!res.ok) throw new Error("Not Python AI service");
              }).catch(() => {
-               const child = spawn(pythonPath, [scriptPath], {
+               const child = spawn(pythonBin!, [scriptPath], {
                  stdio: "ignore",
                  detached: true,
                  env: { ...process.env, PORT: pyPort, PYTHON_PORT: pyPort }
                });
                child.unref();
-               log(`Python AI FastAPI service auto-started on port ${pyPort}.`);
+               log(`Python AI FastAPI service auto-started on port ${pyPort} via ${pythonBin}.`);
              });
            }
          } catch (pyErr) {

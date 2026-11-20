@@ -329,81 +329,72 @@ export default function StrategyPanel({ symbol, interval = "1d", cfg: cfgProp, c
       wsRef.current = null;
       if (destroyRef.current) return;
       if (typeof navigator === "undefined" || !navigator.onLine) return;
-      if (isCrypto && !(typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1")) {
-        try {
-          let wsSym = symUpper.toLowerCase();
-          if (symUpper === "BTCUSD" || symUpper === "BTCUSDT") wsSym = "btcusdt";
-          else if (symUpper === "ETHUSD" || symUpper === "ETHUSDT") wsSym = "ethusdt";
-          else if (symUpper === "SOLUSD" || symUpper === "SOLUSDT") wsSym = "solusdt";
-          else if (symUpper === "BNBUSD" || symUpper === "BNBUSDT") wsSym = "bnbusdt";
-          else if (symUpper === "XRPUSD" || symUpper === "XRPUSDT") wsSym = "xrpusdt";
-          else if (symUpper === "XAUUSD" || symUpper === "XAUTUSDC" || symUpper === "XAUTUSDT" || symUpper === "PAXGUSDT") wsSym = "paxgusdt";
-          else if (!wsSym.endsWith("usdt") && !wsSym.endsWith("usdc")) wsSym = `${wsSym}usdt`;
+      
+      try {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+        wsRef.current = ws;
 
-          const ws = new WebSocket(
-            `wss://stream.binance.com:9443/ws/${wsSym}@kline_${ivl}`
-          );
-          wsRef.current = ws;
-          ws.onerror = () => {
-            if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-            wsRef.current = null;
-          };
-          ws.onclose = () => { ws.onerror = null; };
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: "subscribe", symbols: [symUpper] }));
+        };
 
-          ws.onmessage = (ev: MessageEvent) => {
-            if (destroyRef.current) return;
-            try {
-              const msg = JSON.parse(ev.data);
-              if (msg.e !== "kline") return;
-              const k = msg.k;
-              const updated: Candle = {
-                time: k.t / 1000, open: parseFloat(k.o),
-                high: parseFloat(k.h), low: parseFloat(k.l),
-                close: parseFloat(k.c), volume: parseFloat(k.v),
-              };
-              setCandles(prev => {
-                if (destroyRef.current) return prev;
-                const next = [...prev];
-                const last = next[next.length - 1];
-                if (last && last.time === updated.time) next[next.length - 1] = updated;
-                else next.push(updated);
-                const sigs2 = runEngine(next.slice(-300), cfg);
-                if (sigs2.length > 0 && !destroyRef.current) {
-                  const liveSignal = sigs2[sigs2.length - 1];
-                  setSignal(liveSignal);
-                  
-                  // --- LIVE AUTO INVEST LOGIC ---
-                  if (autoInvest && liveSignal.direction !== "HOLD") {
-                     if (lastOrderTimeRef.current !== liveSignal.time) {
-                        const matchedInst = instrumentsQuery.data?.find((i: any) => i.symbol === symUpper);
-                        if (matchedInst && !placeTrade.isPending) {
-                           lastOrderTimeRef.current = liveSignal.time;
-                           
-                           placeTrade.mutate({
-                             instrumentId: matchedInst.id,
-                             side: liveSignal.direction as any,
-                             amount: user?.autoTradeAmount || "5.00",
-                             strikePrice: String(liveSignal.entryPrice),
-                             durationSeconds: 60,
-                             placedBy: "AI_BOT"
-                           }, {
-                             onSuccess: () => {
-                               toast({
-                                 title: "🤖 Live Auto-Invest Executed!",
-                                 description: `${liveSignal.direction} $${user?.autoTradeAmount || "5.00"} ${symUpper} @ $${liveSignal.entryPrice.toFixed(2)} options trade.`,
-                               });
-                             }
-                           });
-                        }
-                     }
+        ws.onerror = () => { wsRef.current = null; };
+        ws.onclose = () => { wsRef.current = null; };
+
+        ws.onmessage = (ev: MessageEvent) => {
+          if (destroyRef.current) return;
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "market_data" && msg.symbol === symUpper && msg.data?.price) {
+              const p = parseFloat(msg.data.price);
+              if (p > 0) {
+                setCandles(prev => {
+                  if (destroyRef.current || prev.length === 0) return prev;
+                  const next = [...prev];
+                  const last = { ...next[next.length - 1] };
+                  last.close = p;
+                  if (p > last.high) last.high = p;
+                  if (p < last.low) last.low = p;
+                  next[next.length - 1] = last;
+                  const sigs2 = runEngine(next.slice(-300), cfg);
+                  if (sigs2.length > 0 && !destroyRef.current) {
+                    const liveSignal = sigs2[sigs2.length - 1];
+                    setSignal(liveSignal);
+                    
+                    // --- LIVE AUTO INVEST LOGIC ---
+                    if (autoInvest && liveSignal.direction !== "HOLD") {
+                       if (lastOrderTimeRef.current !== liveSignal.time) {
+                          const matchedInst = instrumentsQuery.data?.find((i: any) => i.symbol === symUpper);
+                          if (matchedInst && !placeTrade.isPending) {
+                             lastOrderTimeRef.current = liveSignal.time;
+                             
+                             placeTrade.mutate({
+                               instrumentId: matchedInst.id,
+                               side: liveSignal.direction as any,
+                               amount: user?.autoTradeAmount || "5.00",
+                               strikePrice: String(p),
+                               durationSeconds: 60,
+                               placedBy: "AI_BOT"
+                             }, {
+                               onSuccess: () => {
+                                 toast({
+                                   title: "🤖 Live Auto-Invest Executed!",
+                                   description: `${liveSignal.direction} $${user?.autoTradeAmount || "5.00"} ${symUpper} @ $${p.toFixed(2)} options trade.`,
+                                 });
+                               }
+                             });
+                          }
+                       }
+                    }
                   }
-                }
-                return next;
-              });
-            } catch { /* ignore parse errors */ }
-          };
-        } catch { /* WebSocket unavailable — skip silently */ }
-      }
+                  return next;
+                });
+              }
+            }
+          } catch { /* ignore parse errors */ }
+        };
+      } catch { /* WebSocket unavailable — skip silently */ }
     } catch (e: any) {
       if (!destroyRef.current) {
         setError(e.message ?? "Unknown error");

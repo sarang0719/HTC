@@ -101,12 +101,17 @@ function EquityChart({ curve }: { curve: { time: number; value: number }[] }) {
       lineColor: "#22c55e", topColor: "rgba(34,197,94,0.30)",
       bottomColor: "rgba(34,197,94,0.02)", lineWidth: 2,
     });
-    chartRef.current = c; seriesRef.current = series;
+    chartRef.current = c;
+    seriesRef.current = series;
     const ro = new ResizeObserver(() => {
-      if (ref.current) c.applyOptions({ width: ref.current.clientWidth, height: ref.current.clientHeight });
+      window.requestAnimationFrame(() => {
+        if (ref.current && chartRef.current) {
+          chartRef.current.applyOptions({ width: ref.current.clientWidth, height: ref.current.clientHeight });
+        }
+      });
     });
     ro.observe(ref.current);
-    return () => { ro.disconnect(); c.remove(); }
+    return () => { ro.disconnect(); c.remove(); };
   }, []);
 
   useEffect(() => {
@@ -245,47 +250,42 @@ export default function Strategy() {
   }, []);
 
   // ── Connect WebSocket for live tick ────────────────────────────────────
-  const connectWs = useCallback((sym: string, tf: string) => {
+  const connectWs = useCallback((sym: string, _tf: string) => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
-    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1") return;
-
-    const ivl = TF_MAP[tf] || "1d";
-    let wsSym = sym.toLowerCase();
-    if (sym === "BTCUSD" || sym === "BTCUSDT") wsSym = "btcusdt";
-    else if (sym === "ETHUSD" || sym === "ETHUSDT") wsSym = "ethusdt";
-    else if (sym === "XAUTUSDC" || sym === "XAUTUSDT" || sym === "XAUUSD" || sym === "PAXGUSDT") wsSym = "paxgusdt";
-    else if (!wsSym.endsWith("usdt") && !wsSym.endsWith("usdc")) wsSym = `${wsSym}usdt`;
 
     try {
-      const wsUrl = `wss://stream.binance.com:9443/ws/${wsSym}@kline_${ivl}`;
-      const ws = new WebSocket(wsUrl);
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
       wsRef.current = ws;
-      ws.onerror = () => {
-        if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-        wsRef.current = null;
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "subscribe", symbols: [sym] }));
       };
-      ws.onclose = () => { };
+
+      ws.onerror = () => { wsRef.current = null; };
+      ws.onclose = () => { wsRef.current = null; };
+
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.e !== "kline") return;
-          const k = msg.k;
-          const lp = parseFloat(k.c);
-          setPrice(lp);
-
-          if (k.x) {
-            // Candle closed — append to history
-            setCandles(prev => {
-              const next = [...prev, {
-                time: k.t / 1000, open: +k.o, high: +k.h,
-                low: +k.l, close: +k.c, volume: +k.v
-              }].slice(-500);
-              return next;
-            });
+          if (msg.type === "market_data" && msg.symbol === sym && msg.data?.price) {
+            const lp = parseFloat(msg.data.price);
+            if (lp > 0) {
+              setPrice(lp);
+              setCandles(prev => {
+                if (prev.length === 0) return prev;
+                const next = [...prev];
+                const last = { ...next[next.length - 1] };
+                last.close = lp;
+                if (lp > last.high) last.high = lp;
+                if (lp < last.low) last.low = lp;
+                next[next.length - 1] = last;
+                return next;
+              });
+            }
           }
         } catch {}
       };
-      wsRef.current = ws;
     } catch {}
   }, []);
 

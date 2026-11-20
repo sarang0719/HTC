@@ -1,14 +1,16 @@
 import { db } from "./db";
+import { storage } from "./storage";
 import { instruments, latestPrices, users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import WebSocket from "ws";
 import { sendWinAlert } from "./sms";
 import { isGlobalMarketOpen } from "@shared/market-hours";
+import { broadcastPriceTick } from "./websocket";
 
 const ZERODHA_API_KEY = process.env.ZERODHA_API_KEY || "";
 const ZERODHA_ACCESS_TOKEN = process.env.ZERODHA_ACCESS_TOKEN || "";
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || ZERODHA_API_KEY || "";
-const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY || ZERODHA_API_KEY || "";
+const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY || "4a3bb708bb7247528d0efe958476bdaa";
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "d9c7kppr01qs0pv947ogd9c7kppr01qs0pv947p0";
 
 
@@ -19,8 +21,16 @@ function getFinalResult(trade: any, finalPrice: number) {
   const type = trade.side;
 
   const profit = amount * payout;
-  let isWin = false;
 
+  // Exact tie only when prices are identical
+  if (Math.abs(finalPrice - entryPrice) < 0.0001) {
+    return {
+      result: "TIE",
+      returnAmount: amount
+    };
+  }
+
+  let isWin = false;
   if (type === "BUY") {
     isWin = finalPrice > entryPrice;
   } else {
@@ -74,7 +84,7 @@ export function startBackgroundTasks() {
     const allInstruments = await db.select().from(instruments);
     const map = new Map<string, any>();
     allInstruments.forEach((i: any) => {
-      if (i.assetClass === "CRYPTO" || i.symbol === "PAXGUSDT" || i.symbol === "BTCUSD" || i.symbol === "XAUUSD" || i.symbol === "XAUTUSDC" || i.symbol === "XAUTUSDT") {
+      if (i.assetClass === "CRYPTO" || ["PAXGUSDT", "BTCUSD", "XAUTUSDC", "XAUTUSDT", "XAUUSD", "GOLD"].includes(i.symbol)) {
         map.set(i.symbol, i);
       }
     });
@@ -83,12 +93,14 @@ export function startBackgroundTasks() {
 
   async function fetchRealSparkline(instrument: any, currentPrice: number, changeAbs: number): Promise<string[]> {
     try {
-      if (instrument.assetClass === "CRYPTO" || instrument.symbol === "PAXGUSDT" || instrument.symbol === "XAUUSD" || instrument.symbol === "BTCUSD" || instrument.symbol === "XAUTUSDC" || instrument.symbol === "XAUTUSDT") {
+      if (instrument.assetClass === "CRYPTO" || ["PAXGUSDT", "BTCUSD", "XAUTUSDC", "XAUTUSDT", "XAUUSD", "GOLD"].includes(instrument.symbol)) {
         const BINANCE_API_KEY = process.env.BINANCE_API_KEY || "4ZxKHsnocjAIQAVfcdfy1yh5Yf5AlfryUWa7cYmAlwbsSmAHwgNHnjIJHhBJGATW";
         const headers: Record<string, string> = { "X-MBX-APIKEY": BINANCE_API_KEY };
         let binSym = instrument.symbol;
-        if (instrument.symbol === "BTCUSD") binSym = "BTCUSDC";
-        else if (instrument.symbol === "XAUUSD" || instrument.symbol === "XAUTUSDC" || instrument.symbol === "XAUTUSDT") binSym = "PAXGUSDT";
+        if (instrument.symbol === "BTCUSD") binSym = "BTCUSDT";
+        else if (instrument.symbol === "ETHUSD") binSym = "ETHUSDT";
+        else if (instrument.symbol === "SOLUSD") binSym = "SOLUSDT";
+        else if (["XAUTUSDC", "XAUTUSDT", "XAUUSD", "GOLD"].includes(instrument.symbol)) binSym = "PAXGUSDT";
         const res = await fetch(`https://api3.binance.com/api/v3/klines?symbol=${binSym}&interval=15m&limit=60`, { headers });
         if (res.ok) {
           const data = await res.json() as any[];
@@ -97,7 +109,8 @@ export function startBackgroundTasks() {
         }
       } else {
         let sym = instrument.symbol;
-        if (sym === "XAGUSD") sym = "SI=F";
+        if (sym === "XAUUSD") sym = "PAXG-USD";
+        else if (sym === "XAGUSD") sym = "SI=F";
         else if (sym === "WTIUSD") sym = "CL=F";
         else if (sym === "BANKNIFTY") sym = "^NSEBANK";
         else if (instrument.assetClass === "INDIAN_STOCK" || instrument.country === "IN" || ["HDFCBANK","ICICIBANK","SBIN","KOTAKBANK","AXISBANK","BANKBARODA"].includes(sym)) sym += ".NS";
@@ -146,10 +159,10 @@ export function startBackgroundTasks() {
   function setupBinanceWebsocket() {
     if (isBinanceGeoBlocked) return;
 
-    const ws = new WebSocket("wss://stream.binance.com:9443/ws/!miniTicker@arr");
+    const ws = new WebSocket("wss://stream.binance.com:9443/stream?streams=!miniTicker@arr/paxgusdt@bookTicker");
 
     ws.on("open", async () => {
-      console.log("Connected to live Binance WebSocket mirror for Cryptos & Gold!");
+      console.log("Connected to live Binance WebSocket mirror for Cryptos & Gold (with BookTicker)!");
       await refreshCryptoMap();
     });
 
@@ -157,7 +170,40 @@ export function startBackgroundTasks() {
       try {
         if (!cryptoMap) return;
 
-        const events = JSON.parse(data);
+        const payload = JSON.parse(data);
+
+        // Real-time orderbook mid-price for Gold (PAXGUSDT / XAUUSD)
+        if (payload.stream === "paxgusdt@bookTicker" && payload.data) {
+          const b = parseFloat(payload.data.b);
+          const a = parseFloat(payload.data.a);
+          const midPrice = (b + a) / 2;
+          const targets: any[] = [];
+          if (cryptoMap.has("XAUTUSDC")) targets.push(cryptoMap.get("XAUTUSDC")!);
+          if (cryptoMap.has("XAUTUSDT")) targets.push(cryptoMap.get("XAUTUSDT")!);
+          if (cryptoMap.has("PAXGUSDT")) targets.push(cryptoMap.get("PAXGUSDT")!);
+          if (cryptoMap.has("XAUUSD")) targets.push(cryptoMap.get("XAUUSD")!);
+          if (cryptoMap.has("GOLD")) targets.push(cryptoMap.get("GOLD")!);
+
+          for (const instrument of targets) {
+            const instId = instrument.id;
+            const newSparkline = await updateCachedSparkline(instrument, midPrice, 0);
+
+            await db.update(latestPrices)
+              .set({
+                price: String(midPrice.toFixed(2)),
+                sparkline: newSparkline,
+                asOf: new Date(),
+                isOpen: true
+              })
+              .where(eq(latestPrices.instrumentId, instId));
+
+            broadcastPriceTick(instrument.symbol, midPrice);
+          }
+          broadcastPriceTick("XAUUSD", midPrice);
+          return;
+        }
+
+        const events = payload.data || payload;
         if (!Array.isArray(events)) return;
 
         for (const ev of events) {
@@ -165,19 +211,14 @@ export function startBackgroundTasks() {
           const targets: any[] = [];
           if (cryptoMap.has(symbol)) targets.push(cryptoMap.get(symbol)!);
 
-          if ((symbol === "BTCUSDT" || symbol === "BTCUSDC") && cryptoMap.has("BTCUSD")) {
+          if (symbol === "BTCUSDT" && cryptoMap.has("BTCUSD")) {
             targets.push(cryptoMap.get("BTCUSD")!);
           }
-          if ((symbol === "ETHUSDT" || symbol === "ETHUSDC") && cryptoMap.has("ETHUSD")) {
+          if (symbol === "ETHUSDT" && cryptoMap.has("ETHUSD")) {
             targets.push(cryptoMap.get("ETHUSD")!);
           }
-          if ((symbol === "SOLUSDT" || symbol === "SOLUSDC") && cryptoMap.has("SOLUSD")) {
+          if (symbol === "SOLUSDT" && cryptoMap.has("SOLUSD")) {
             targets.push(cryptoMap.get("SOLUSD")!);
-          }
-          if (symbol === "PAXGUSDT") {
-            if (cryptoMap.has("XAUTUSDC")) targets.push(cryptoMap.get("XAUTUSDC")!);
-            if (cryptoMap.has("XAUTUSDT")) targets.push(cryptoMap.get("XAUTUSDT")!);
-            if (cryptoMap.has("XAUUSD"))   targets.push(cryptoMap.get("XAUUSD")!);
           }
 
           for (const instrument of targets) {
@@ -199,6 +240,8 @@ export function startBackgroundTasks() {
                 isOpen: true 
               })
               .where(eq(latestPrices.instrumentId, instId));
+
+            broadcastPriceTick(instrument.symbol, price, changeAbs, changePct);
           }
         }
       } catch (err) { }
@@ -227,7 +270,7 @@ export function startBackgroundTasks() {
 
     ws.on("open", async () => {
       console.log("Connected to live Finnhub WebSocket mirror for Forex & Silver!");
-      const symbolsToSubscribe = ["OANDA:XAG_USD", "OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:USD_JPY"];
+      const symbolsToSubscribe = ["BINANCE:PAXGUSDT", "OANDA:XAG_USD", "OANDA:EUR_USD", "OANDA:GBP_USD", "OANDA:USD_JPY"];
       for (const sym of symbolsToSubscribe) {
         ws.send(JSON.stringify({'type':'subscribe', 'symbol': sym}));
       }
@@ -239,9 +282,9 @@ export function startBackgroundTasks() {
         if (msg.type === "trade" && msg.data) {
           const allInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
           for (const trade of msg.data) {
-            const sym = trade.s; // e.g. "OANDA:XAU_USD"
+            const sym = trade.s; // e.g. "BINANCE:PAXGUSDT"
             let dbSym = "";
-            if (sym === "OANDA:XAU_USD") dbSym = "XAUUSD";
+            if (sym === "BINANCE:PAXGUSDT") dbSym = "PAXGUSDT";
             else if (sym === "OANDA:XAG_USD") dbSym = "XAGUSD";
             else if (sym.startsWith("OANDA:")) dbSym = sym.replace("OANDA:", "").replace("_", "");
             
@@ -291,8 +334,81 @@ export function startBackgroundTasks() {
     });
   }
 
-  setupBinanceWebsocket();
-  setupFinnhubWebsocket();
+  function setupTwelveDataWebsocket() {
+    try {
+      const ws = new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${TWELVEDATA_API_KEY}`);
+
+      ws.on("open", () => {
+        console.log("Connected to live TwelveData WebSocket mirror for Spot Gold & Forex!");
+        ws.send(JSON.stringify({
+          action: "subscribe",
+          params: {
+            symbols: "XAU/USD,XAG/USD,EUR/USD,GBP/USD,USD/JPY"
+          }
+        }));
+      });
+
+      ws.on("message", async (data: string) => {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.event === "price" && msg.symbol && msg.price) {
+            const symRaw = msg.symbol.replace("/", "");
+            const price = parseFloat(msg.price);
+            if (isNaN(price) || price <= 0) return;
+
+            const allInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
+            const instrument = allInstruments.find((i: any) => i.symbol === symRaw);
+            if (instrument) {
+              let changeAbs = 0;
+              let changePct = 0;
+              const [row] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, instrument.id));
+              if (row && row.price) {
+                const prevPrice = parseFloat(row.price);
+                changeAbs = price - prevPrice;
+                changePct = prevPrice > 0 ? (changeAbs / prevPrice) * 100 : 0;
+              }
+
+              const newSparkline = await updateCachedSparkline(instrument, price, changeAbs);
+
+              await db.update(latestPrices)
+                .set({
+                  price: String(price),
+                  changeAbs: String(changeAbs.toFixed(4)),
+                  changePct: String(changePct.toFixed(2)),
+                  sparkline: newSparkline,
+                  asOf: new Date(),
+                  isOpen: true
+                })
+                .where(eq(latestPrices.instrumentId, instrument.id));
+            }
+          }
+        } catch (err) {}
+      });
+
+      ws.on("close", () => {
+        if (!isTwelveDataRateLimited) {
+          console.log("TwelveData WebSocket closed. Reconnecting in 30s...");
+          setTimeout(setupTwelveDataWebsocket, 30000);
+        }
+      });
+
+      ws.on("error", (err) => {
+        isTwelveDataRateLimited = true;
+      });
+    } catch (e) {
+      console.error("TwelveData WS setup error:", e);
+    }
+  }
+
+  let isTwelveDataRateLimited = true;
+
+  refreshCryptoMap().then(() => {
+    setupBinanceWebsocket();
+    setupFinnhubWebsocket();
+    if (!isTwelveDataRateLimited) {
+      setupTwelveDataWebsocket();
+    }
+  });
 
   setInterval(async () => {
     try {
@@ -304,79 +420,200 @@ export function startBackgroundTasks() {
       });
 
       bgTick++;
-      const shouldFetchTwelveData = (bgTick % 12) === 0;
+      const shouldFetchTwelveData = (bgTick % 30) === 0;
 
       let callCount = 0;
       for (const instrument of activeInstruments) {
         let priceData = null;
 
-        if (instrument.symbol === "XAUUSD" || instrument.symbol === "PAXGUSDT") {
+        // Priority 0: Real Spot Gold (XAUUSD / PAXG) via Binance Paxos Gold Spot or TwelveData
+        if (["XAUUSD", "GOLD", "PAXGUSDT", "XAUTUSDC", "XAUTUSDT"].includes(instrument.symbol)) {
+          // 1. Direct Binance Paxos Gold Spot (Fastest, zero rate limits, authentic 1:1 match with chart candles)
           try {
-            const bRes = await fetch("https://api3.binance.com/api/v3/ticker/24hr?symbol=PAXGUSDT");
+            const bRes = await fetch("https://api3.binance.com/api/v3/ticker/24hr?symbol=PAXGUSDT", { signal: AbortSignal.timeout(2000) });
             if (bRes.ok) {
-              const bData = await bRes.json();
+              const bData = await bRes.json() as any;
               if (bData && bData.lastPrice) {
+                const mid = parseFloat(bData.lastPrice);
+                const chg = parseFloat(bData.priceChange || "0");
+                const chgPct = parseFloat(bData.priceChangePercent || "0");
                 priceData = {
-                  price: String(parseFloat(bData.lastPrice).toFixed(4)),
-                  changeAbs: String(parseFloat(bData.priceChange || "0").toFixed(4)),
-                  changePct: String(parseFloat(bData.priceChangePercent || "0").toFixed(2))
+                  price: String(mid.toFixed(2)),
+                  changeAbs: String(chg.toFixed(2)),
+                  changePct: String(chgPct.toFixed(2))
                 };
               }
             }
           } catch {}
-        } else if (instrument.assetClass === "FOREX" || ["XAGUSD"].includes(instrument.symbol)) {
-          const isMetal = ["XAGUSD"].includes(instrument.symbol);
-          const shouldFetch = isMetal ? (bgTick % 3 === 0) : ((bgTick % 3 === 0) && (((bgTick / 3) % 36) === (callCount % 36)));
+
+          if (!priceData) {
+            try {
+              const bRes = await fetch("https://api3.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT", { signal: AbortSignal.timeout(2000) });
+              if (bRes.ok) {
+                const bData = await bRes.json() as any;
+                if (bData && bData.bidPrice && bData.askPrice) {
+                  const mid = (parseFloat(bData.bidPrice) + parseFloat(bData.askPrice)) / 2;
+                  priceData = {
+                    price: String(mid.toFixed(2)),
+                    changeAbs: "0.00",
+                    changePct: "0.00"
+                  };
+                }
+              }
+            } catch {}
+          }
+
+          // 2. TwelveData Spot Feed (Only if Binance was down & not rate limited)
+          if (!priceData && shouldFetchTwelveData && TWELVEDATA_API_KEY && !isTwelveDataRateLimited) {
+            try {
+              const tdRes = await fetch(`https://api.twelvedata.com/quote?symbol=XAU/USD&apikey=${TWELVEDATA_API_KEY}`, { signal: AbortSignal.timeout(2500) });
+              if (tdRes.ok) {
+                const tdData = await tdRes.json() as any;
+                if (!tdData.code) {
+                  const px = parseFloat(tdData.close || tdData.price);
+                  if (!isNaN(px) && px > 0) {
+                    const chg = parseFloat(tdData.change || "0");
+                    const chgPct = parseFloat(tdData.percent_change || "0");
+                    priceData = {
+                      price: String(px.toFixed(2)),
+                      changeAbs: String(chg.toFixed(2)),
+                      changePct: String(chgPct.toFixed(2))
+                    };
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          // 3. Fallback to Yahoo Finance Spot Gold (PAXG-USD)
+          if (!priceData) {
+            try {
+              const yRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/PAXG-USD?interval=15m&range=1d", {
+                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+                signal: AbortSignal.timeout(2500)
+              });
+              if (yRes.ok) {
+                const yData = await yRes.json() as any;
+                const result = yData.chart?.result?.[0];
+                if (result) {
+                  const meta = result.meta;
+                  const px = meta ? parseFloat(meta.regularMarketPrice) : null;
+                  if (px && !isNaN(px)) {
+                    const prev = meta ? parseFloat(meta.previousClose || px) : px;
+                    const chg = px - prev;
+                    const chgPct = prev > 0 ? (chg / prev) * 100 : 0;
+                    priceData = {
+                      price: String(px.toFixed(2)),
+                      changeAbs: String(chg.toFixed(2)),
+                      changePct: String(chgPct.toFixed(2))
+                    };
+                  }
+                }
+              }
+            } catch {}
+          }
+        } else if (instrument.symbol === "XAGUSD") {
+          // Primary institutional feed for Silver: Yahoo Finance COMEX Silver (SI=F)
+          try {
+            const yRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/SI=F?interval=15m&range=1d", {
+              headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+            });
+            if (yRes.ok) {
+              const yData = await yRes.json() as any;
+              const result = yData.chart?.result?.[0];
+              if (result) {
+                const meta = result.meta;
+                const px = meta ? parseFloat(meta.regularMarketPrice) : null;
+                if (px && !isNaN(px)) {
+                  const prev = meta ? parseFloat(meta.previousClose || px) : px;
+                  const chg = px - prev;
+                  const chgPct = prev > 0 ? (chg / prev) * 100 : 0;
+                  priceData = {
+                    price: String(px.toFixed(4)),
+                    changeAbs: String(chg.toFixed(4)),
+                    changePct: String(chgPct.toFixed(2))
+                  };
+                }
+              }
+            }
+          } catch {}
+        } else if (instrument.assetClass === "FOREX") {
+          const shouldFetch = (bgTick % 30 === 0) && (((bgTick / 30) % 36) === (callCount % 36));
           callCount++;
           
-          if (shouldFetch) {
+          if (shouldFetch && !isTwelveDataRateLimited) {
             try {
               let tdSym = instrument.symbol;
               if (instrument.symbol.length === 6) tdSym = `${instrument.symbol.substring(0,3)}/${instrument.symbol.substring(3,6)}`;
 
               const res = await fetch(`https://api.twelvedata.com/price?symbol=${tdSym}&apikey=${TWELVEDATA_API_KEY}`);
               const data = await res.json() as any;
-              if (data && data.price) {
+              if (data && data.code === 429) {
+                isTwelveDataRateLimited = true;
+              } else if (data && data.price) {
                  let val = parseFloat(data.price);
                  priceData = { price: String(val), changeAbs: "0.01", changePct: "0.01" };
               }
             } catch (err) {}
+          }
+
+          // Fallback to Yahoo Finance Forex Proxy
+          if (!priceData) {
+            try {
+              const ySym = `${instrument.symbol}=X`;
+              const yRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?interval=15m&range=1d`, {
+                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+              });
+              if (yRes.ok) {
+                const yData = await yRes.json() as any;
+                const result = yData.chart?.result?.[0];
+                if (result) {
+                  const meta = result.meta;
+                  const px = meta ? parseFloat(meta.regularMarketPrice) : null;
+                  if (px && !isNaN(px)) {
+                    const prev = meta ? parseFloat(meta.previousClose || px) : px;
+                    const chg = px - prev;
+                    const chgPct = prev > 0 ? (chg / prev) * 100 : 0;
+                    priceData = {
+                      price: String(px.toFixed(4)),
+                      changeAbs: String(chg.toFixed(4)),
+                      changePct: String(chgPct.toFixed(2))
+                    };
+                  }
+                }
+              }
+            } catch {}
           }
         }
 
         if (!priceData && ["US_STOCK", "BANKING", "INDIAN_STOCK", "ETF", "MUTUAL_FUND"].includes(instrument.assetClass)) {
           // Priority 0: Finnhub Quote API (Primary Institutional Feed for US/Global Stocks)
           try {
-            const fhRes = await fetch(`https://finnhub.io/api/v1/quote?symbol=${instrument.symbol}&token=${FINNHUB_API_KEY}`);
-            const fhData = await fhRes.json() as any;
-            if (fhData && fhData.c && fhData.c > 0 && !fhData.error) {
-              priceData = {
-                price: String(Number(fhData.c).toFixed(4)),
-                changeAbs: String(Number(fhData.d || 0).toFixed(4)),
-                changePct: String(Number(fhData.dp || 0).toFixed(2)),
-              };
+            if (callCount < 1) {
+              callCount++;
+              const fhRes = await fetch(`https://finnhub.io/api/v1/quote?symbol=${instrument.symbol}&token=${FINNHUB_API_KEY}`, { signal: AbortSignal.timeout(2000) });
+              if (fhRes.ok) {
+                const fhData = await fhRes.json() as any;
+                if (fhData && fhData.c && fhData.c > 0 && !fhData.error) {
+                  priceData = {
+                    price: String(Number(fhData.c).toFixed(4)),
+                    changeAbs: String(Number(fhData.d || 0).toFixed(4)),
+                    changePct: String(Number(fhData.dp || 0).toFixed(2)),
+                  };
+                }
+              }
             }
           } catch {}
 
-          // Priority 1: Alpha Vantage (Primary Stock Feed)
-          try {
-            const res = await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${instrument.symbol}&apikey=${ALPHA_VANTAGE_API_KEY}`);
-            const data = await res.json() as any;
-            if (data && data["Global Quote"] && data["Global Quote"]["05. price"]) {
-              priceData = {
-                price: String(data["Global Quote"]["05. price"]),
-                changeAbs: String(data["Global Quote"]["09. change"]),
-                changePct: String(data["Global Quote"]["10. change percent"].replace("%", "")),
-              };
-            }
-          } catch {}
-
-          // Priority 1: TwelveData Fallback
-          if (!priceData) {
+          // Priority 1: TwelveData Paced Fallback (max 1 call per 2.5 min cycle)
+          if (!priceData && shouldFetchTwelveData && !isTwelveDataRateLimited && callCount < 2) {
             try {
-              const res = await fetch(`https://api.twelvedata.com/price?symbol=${instrument.symbol}&apikey=${TWELVEDATA_API_KEY}`);
+              callCount++;
+              const res = await fetch(`https://api.twelvedata.com/price?symbol=${instrument.symbol}&apikey=${TWELVEDATA_API_KEY}`, { signal: AbortSignal.timeout(2000) });
               const data = await res.json() as any;
-              if (data && data.price) {
+              if (data && data.code === 429) {
+                isTwelveDataRateLimited = true;
+              } else if (data && data.price) {
                 priceData = { price: String(data.price), changeAbs: "0.01", changePct: "0.01" };
               }
             } catch {}
@@ -384,10 +621,12 @@ export function startBackgroundTasks() {
         }
 
         // Priority 2: Yahoo Finance Universal Live Proxy (Zero Rate Limit for Stocks, Forex & Indian Banking)
-        if (!priceData && instrument.assetClass !== "CRYPTO" && !["XAUUSD", "XAGUSD"].includes(instrument.symbol)) {
+        if (!priceData && instrument.assetClass !== "CRYPTO") {
           try {
             let ySym = instrument.symbol;
-            if (ySym === "WTIUSD") ySym = "CL=F";
+            if (ySym === "XAUUSD") ySym = "PAXG-USD";
+            else if (ySym === "XAGUSD") ySym = "SI=F";
+            else if (ySym === "WTIUSD") ySym = "CL=F";
             else if (ySym === "BANKNIFTY") ySym = "^NSEBANK";
             else if (instrument.country === "IN" || ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "BANKBARODA"].includes(ySym)) ySym = `${ySym}.NS`;
             else if (instrument.assetClass === "FOREX") ySym = `${ySym}=X`;
@@ -418,16 +657,9 @@ export function startBackgroundTasks() {
           } catch {}
         }
 
-        // Fallback to existing database price if Yahoo query fails or returns null
+        // If no live price was fetched this tick, skip updating DB to prevent stale overwrites
         if (!priceData) {
-          const [existing] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, instrument.id));
-          if (existing && existing.price) {
-            priceData = {
-              price: String(existing.price),
-              changeAbs: String(existing.changeAbs || "0.0000"),
-              changePct: String(existing.changePct || "0.00")
-            };
-          }
+          continue;
         }
 
         const isOpen = isGlobalMarketOpen(instrument.assetClass, instrument.symbol);
@@ -471,6 +703,8 @@ export function startBackgroundTasks() {
               isOpen: true
             })
             .where(eq(latestPrices.instrumentId, instrument.id));
+
+          broadcastPriceTick(instrument.symbol, currentPrice, changeAbs, parseFloat(priceData.changePct || "0"));
         } else {
             // Fallback safety
             const isOpen = isGlobalMarketOpen(instrument.assetClass, instrument.symbol);
@@ -552,7 +786,6 @@ export function startBackgroundTasks() {
   // Checks every second for any expired ACTIVE time-based trades
   setInterval(async () => {
     try {
-      const { storage } = await import("./storage");
       const activeTrades = await storage.getActiveTimeBasedOrders();
       if (!activeTrades || activeTrades.length === 0) return;
 
@@ -575,7 +808,7 @@ export function startBackgroundTasks() {
             settlePrice: currentPrice.toString(),
           });
           
-          if (result === "WIN" && returnAmount > 0) {
+          if ((result === "WIN" || result === "TIE") && returnAmount > 0) {
              try {
                 // Determine which balance to credit: check the trade's deduction transaction for mode
                 const txs = await storage.getWalletTransactions(trade.userId);
@@ -589,18 +822,24 @@ export function startBackgroundTasks() {
                 }
 
                 await storage.createWalletTransaction({
-                   userId: trade.userId, type: "TRADE_WIN", amount: String(returnAmount),
-                   status: "SUCCESS", referenceId: String(trade.id), mode: tradeMode
+                   userId: trade.userId, 
+                   type: result === "WIN" ? "TRADE_WIN" : "TRADE_REFUND", 
+                   amount: String(returnAmount),
+                   status: "SUCCESS", 
+                   referenceId: String(trade.id), 
+                   mode: tradeMode
                 } as any);
 
-                // Send SMS Win Notification
-                try {
-                  const user = await storage.getUser(trade.userId);
-                  if (user && user.phoneNumber) {
-                    await sendWinAlert(user.phoneNumber, returnAmount.toFixed(2));
+                // Send SMS Win Notification only for actual wins
+                if (result === "WIN") {
+                  try {
+                    const user = await storage.getUser(trade.userId);
+                    if (user && user.phoneNumber) {
+                      await sendWinAlert(user.phoneNumber, returnAmount.toFixed(2));
+                    }
+                  } catch (smsErr) {
+                    console.error("SMS notification failed:", smsErr);
                   }
-                } catch (smsErr) {
-                  console.error("SMS notification failed:", smsErr);
                 }
              } catch(err) { console.error("Wallet payout failed for trade:", trade.id, err); }
           }

@@ -57,6 +57,9 @@ export interface CandlePrediction {
   next_support?: number;
   next_resistance?: number;
   canonicalSignal?: "BUY" | "SELL" | "NO TRADE";
+  constant_direction?: "BUY" | "SELL";
+  trend_bias?: string;
+  directional_tenure_bars?: number;
   marketRegime?: string;
   mtfAlignment?: string;
   modelVersion?: string;
@@ -92,60 +95,82 @@ const WARMUP = 50;
 // ─── Math Helpers ─────────────────────────────────────────────────────────────
 
 function ema(src: number[], len: number): number[] {
+  const n = src.length;
+  if (n === 0) return [];
   const k = 2 / (len + 1);
-  const out: number[] = [];
-  for (let i = 0; i < src.length; i++)
-    out.push(i === 0 ? src[0] : src[i] * k + out[i - 1] * (1 - k));
+  const out = new Array<number>(n);
+  out[0] = src[0];
+  for (let i = 1; i < n; i++) {
+    out[i] = src[i] * k + out[i - 1] * (1 - k);
+  }
   return out;
 }
 
 function rsiArr(closes: number[], len: number): number[] {
-  const out = new Array(closes.length).fill(50);
-  if (closes.length <= len) return out;
-  const g = [0], l = [0];
-  for (let i = 1; i < closes.length; i++) {
+  const n = closes.length;
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) out[i] = 50;
+  if (n <= len) return out;
+
+  let ag = 0;
+  let al = 0;
+  for (let i = 1; i <= len; i++) {
     const d = closes[i] - closes[i - 1];
-    g.push(d > 0 ? d : 0);
-    l.push(d < 0 ? -d : 0);
+    if (d > 0) ag += d;
+    else al -= d;
   }
-  let ag = g.slice(1, len + 1).reduce((a, b) => a + b, 0) / len;
-  let al = l.slice(1, len + 1).reduce((a, b) => a + b, 0) / len;
+  ag /= len;
+  al /= len;
   out[len] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-  for (let i = len + 1; i < closes.length; i++) {
-    ag = (ag * (len - 1) + g[i]) / len;
-    al = (al * (len - 1) + l[i]) / len;
+
+  for (let i = len + 1; i < n; i++) {
+    const d = closes[i] - closes[i - 1];
+    const g = d > 0 ? d : 0;
+    const l = d < 0 ? -d : 0;
+    ag = (ag * (len - 1) + g) / len;
+    al = (al * (len - 1) + l) / len;
     out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
   }
   return out;
 }
 
 function atrArr(candles: Candle[], len: number): number[] {
-  const tr = candles.map((c, i) =>
-    i === 0 ? c.high - c.low :
-      Math.max(c.high - c.low, Math.abs(c.high - candles[i - 1].close), Math.abs(c.low - candles[i - 1].close))
-  );
-  const out = new Array(candles.length).fill(0);
-  if (tr.length < len) return out;
-  
-  // High-precision EMA smoothing for hyper-responsive ATR volatility
+  const n = candles.length;
+  const out = new Array<number>(n);
+  if (n === 0) return out;
   const k = 2 / (len + 1);
-  out[0] = tr[0];
-  for (let i = 1; i < candles.length; i++) {
-    out[i] = tr[i] * k + out[i - 1] * (1 - k);
+  out[0] = candles[0].high - candles[0].low;
+  for (let i = 1; i < n; i++) {
+    const c = candles[i];
+    const prevClose = candles[i - 1].close;
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+    out[i] = tr * k + out[i - 1] * (1 - k);
   }
   return out;
 }
 
 function supertrendArr(candles: Candle[], factor: number, len: number): number[] {
+  const n = candles.length;
+  if (n === 0) return [];
   const a = atrArr(candles, len);
-  const hl2 = candles.map(c => (c.high + c.low) / 2);
-  const fU = hl2.map((h, i) => h + factor * a[i]);
-  const fL = hl2.map((h, i) => h - factor * a[i]);
-  const dir = new Array(candles.length).fill(-1);
-  for (let i = 1; i < candles.length; i++) {
-    fL[i] = fL[i] > fL[i - 1] || candles[i - 1].close < fL[i - 1] ? fL[i] : fL[i - 1];
-    fU[i] = fU[i] < fU[i - 1] || candles[i - 1].close > fU[i - 1] ? fU[i] : fU[i - 1];
-    dir[i] = candles[i].close > fU[i] ? -1 : candles[i].close < fL[i] ? 1 : dir[i - 1];
+  const dir = new Array<number>(n);
+  dir[0] = -1;
+  let prevUpper = (candles[0].high + candles[0].low) / 2 + factor * a[0];
+  let prevLower = (candles[0].high + candles[0].low) / 2 - factor * a[0];
+
+  for (let i = 1; i < n; i++) {
+    const hl2 = (candles[i].high + candles[i].low) / 2;
+    const basicUpper = hl2 + factor * a[i];
+    const basicLower = hl2 - factor * a[i];
+
+    const prevClose = candles[i - 1].close;
+    const finalLower = (basicLower > prevLower || prevClose < prevLower) ? basicLower : prevLower;
+    const finalUpper = (basicUpper < prevUpper || prevClose > prevUpper) ? basicUpper : prevUpper;
+
+    const close = candles[i].close;
+    dir[i] = close > finalUpper ? -1 : close < finalLower ? 1 : dir[i - 1];
+    prevLower = finalLower;
+    prevUpper = finalUpper;
   }
   return dir;
 }
@@ -212,11 +237,13 @@ function detectLiquidityPools(src: Candle[], atr: number[]): { bsl: LiquidityPoo
   if (n < 15) return { bsl: null, ssl: null, sweptLo: false, sweptHi: false };
 
   const atrV = atr[n] || 1;
-  const recentHighs = src.slice(n - 15, n).map(c => c.high);
-  const recentLows = src.slice(n - 15, n).map(c => c.low);
-
-  const swingHigh = Math.max(...recentHighs);
-  const swingLow = Math.min(...recentLows);
+  let swingHigh = -Infinity;
+  let swingLow = Infinity;
+  const startIdx = Math.max(0, n - 15);
+  for (let i = startIdx; i < n; i++) {
+    if (src[i].high > swingHigh) swingHigh = src[i].high;
+    if (src[i].low < swingLow) swingLow = src[i].low;
+  }
 
   const current = src[n];
 
@@ -337,9 +364,13 @@ export function predictNextCandle(
   const rsi14 = rsiArr(closes, is1mTimeframe ? 5 : 14);
   const atr7 = atrArr(src, 7);
   const stDir = supertrendArr(src, 2.0, 10);
-  const macdLine = ema(closes, 12).map((v, i) => v - ema(closes, 26)[i]);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = new Array<number>(closes.length);
+  for (let i = 0; i < closes.length; i++) macdLine[i] = ema12[i] - ema26[i];
   const macdSig = ema(macdLine, 9);
-  const macdHist = macdLine.map((m, i) => m - macdSig[i]);
+  const macdHist = new Array<number>(closes.length);
+  for (let i = 0; i < closes.length; i++) macdHist[i] = macdLine[i] - macdSig[i];
 
   const rsiV = rsi14[n];
   const prevRsi = rsi14[Math.max(0, n - 1)];
@@ -451,17 +482,49 @@ export function predictNextCandle(
   const isPerfectBull = (inBullZone || sweptLo) && (rsiV <= rsiOversold || (lowerWick / rangeC > requiredWickRatio)) && isExtremeBullishExhaustion;
   const isPerfectBear = (inBearZone || sweptHi) && (rsiV >= rsiOverbought || (upperWick / rangeC > requiredWickRatio)) && isExtremeBearishExhaustion;
 
+  // ── Pure Candle Price Action Engine (Zero Lagging Overrides) ─────────────
+  const isRedCandle = c.close < c.open;
+  const isGreenCandle = c.close > c.open;
+  const posInRange = (c.close - c.low) / Math.max(0.0001, c.high - c.low);
+  const prevC = src[Math.max(0, n - 1)];
+  const isBreakdown = prevC ? c.close < prevC.low : false;
+  const isBreakout = prevC ? c.close > prevC.high : false;
+
+  // Recent 3 candles momentum
+  const recent3 = src.slice(Math.max(0, n - 2), n + 1);
+  const redCount = recent3.filter(x => x.close < x.open).length;
+  const greenCount = recent3.filter(x => x.close > x.open).length;
+  const netMove3 = c.close - recent3[0].open;
+
+  // ── High-Accuracy Exhaustion & Reversal Detection ──────────
+  const isUpperWickRejection = upperWickRatio >= 0.30;
+  const isLowerWickRejection = lowerWickRatio >= 0.30;
+  const isOverbought = rsiV >= 70;
+  const isOversold = rsiV <= 30;
+
   let direction: "BUY" | "SELL";
-  if (isPerfectBull) {
+  if ((isUpperWickRejection && posInRange <= 0.50) || (isOverbought && upperWickRatio >= 0.22) || (greenCount >= 3 && isUpperWickRejection)) {
+    // Selling rejection at high / overbought exhaustion: PREDICT RED
+    direction = "SELL";
+  } else if ((isLowerWickRejection && posInRange >= 0.50) || (isOversold && lowerWickRatio >= 0.22) || (redCount >= 3 && isLowerWickRejection)) {
+    // Buying defense at low / oversold exhaustion: PREDICT GREEN
+    direction = "BUY";
+  } else if (isPerfectBull) {
     direction = "BUY";
   } else if (isPerfectBear) {
     direction = "SELL";
-  } else if (bullW > bearW && (macroBull || inBullZone || sweptLo)) {
-    direction = "BUY";
-  } else if (bearW > bullW && (macroBear || inBearZone || sweptHi)) {
+  } else if (isRedCandle && (posInRange < 0.45 || isBreakdown || redCount >= 2 || netMove3 < 0)) {
+    // Clear selling momentum: MUST BE SELL
     direction = "SELL";
+  } else if (isGreenCandle && (posInRange > 0.55 || isBreakout || greenCount >= 2 || netMove3 > 0)) {
+    // Clear buying momentum: MUST BE BUY
+    direction = "BUY";
+  } else if (bearW > bullW || isRedCandle) {
+    direction = "SELL";
+  } else if (bullW > bearW || isGreenCandle) {
+    direction = "BUY";
   } else {
-    direction = macroTrend;
+    direction = c.close >= c.open ? "BUY" : "SELL";
   }
 
   // Quality Confirmation Thresholding: Responsive majority confluence
@@ -607,56 +670,47 @@ export interface MultiTimeframeScanResult {
 
 export function computeTimeframeDirection(candles: Candle[], tfMinutes: number, marketSymbol?: string): "BUY" | "SELL" {
   if (!candles || candles.length === 0) return "BUY";
-  const n = candles.length;
-  const closes = candles.map(c => c.close);
-  const currentPrice = closes[n - 1];
   const tfSecs = tfMinutes * 60;
   const agg = aggregateCandles(candles, tfSecs);
 
-  if (agg.length >= 4) {
-    const aggCloses = agg.map(c => c.close);
-    const m = aggCloses.length;
-    const fastEma = ema(aggCloses, Math.min(3, m - 1))[m - 1];
-    const slowEma = ema(aggCloses, Math.min(8, m - 1))[m - 1];
-    const lastAgg = agg[m - 1];
-    const isGreen = lastAgg.close >= lastAgg.open;
-    let b = 0, s = 0;
-    if (fastEma > slowEma) b += 2; else if (fastEma < slowEma) s += 2;
-    if (aggCloses[m - 1] > fastEma) b += 1; else if (aggCloses[m - 1] < fastEma) s += 1;
-    if (isGreen) b += 1; else s += 1;
-    return b > s ? "BUY" : s > b ? "SELL" : (isGreen ? "BUY" : "SELL");
+  const targetCandles = agg.length >= 2 ? agg : candles;
+  const m = targetCandles.length;
+  const lastC = targetCandles[m - 1];
+  const prevC = targetCandles[Math.max(0, m - 2)];
+
+  const isRed = lastC.close < lastC.open;
+  const isGreen = lastC.close > lastC.open;
+  const rng = Math.max(0.0001, lastC.high - lastC.low);
+  const posInRange = (lastC.close - lastC.low) / rng;
+  const isBreakdown = prevC ? lastC.close < prevC.low : false;
+  const isBreakout = prevC ? lastC.close > prevC.high : false;
+
+  if (isRed && (posInRange < 0.45 || isBreakdown || lastC.close < prevC.close)) {
+    return "SELL";
+  }
+  if (isGreen && (posInRange > 0.55 || isBreakout || lastC.close > prevC.close)) {
+    return "BUY";
   }
 
-  // When fewer aggregated candles, scale the EMA length against base data
-  if (n >= 3) {
-    const fastPeriod = Math.max(2, Math.min(tfMinutes * 3, n - 2));
-    const slowPeriod = Math.max(5, Math.min(tfMinutes * 8, n - 1));
-    const fEma = ema(closes, fastPeriod)[n - 1];
-    const sEma = ema(closes, slowPeriod)[n - 1];
-    if (currentPrice > fEma && fEma >= sEma) return "BUY";
-    if (currentPrice < fEma && fEma <= sEma) return "SELL";
-    return currentPrice >= fEma ? "BUY" : "SELL";
-  }
-
-  // Fallback for minimal bars
-  const last = candles[n - 1];
-  return last.close >= last.open ? "BUY" : "SELL";
+  return isRed ? "SELL" : "BUY";
 }
 
 export function scanMultiTimeframeConfluence(
   allCandles: Candle[],
   marketSymbol: string,
-  priceChangeHint?: number
+  priceChangeHint?: number,
+  masterDirection?: "BUY" | "SELL"
 ): MultiTimeframeScanResult {
   if (!allCandles || allCandles.length < 2) {
-    const fallbackDir: "BUY" | "SELL" = (priceChangeHint !== undefined && priceChangeHint < 0) ? "SELL" : "BUY";
+    const fallbackDir: "BUY" | "SELL" = masterDirection || ((priceChangeHint !== undefined && priceChangeHint < 0) ? "SELL" : "BUY");
+    const isBuy = fallbackDir === "BUY";
     return {
       tfSignals: { "1m": fallbackDir, "5m": fallbackDir, "15m": fallbackDir, "1H": fallbackDir },
       allAligned: true,
       alignedCount: 4,
       direction: fallbackDir,
-      badgeText: `🟢 4/4 TIMEFRAMES CONFIRMED (${fallbackDir})`,
-      badgeColor: "emerald",
+      badgeText: isBuy ? "🟢 4/4 TIMEFRAMES CONFIRMED (BUY)" : "🔴 4/4 TIMEFRAMES CONFIRMED (SELL)",
+      badgeColor: isBuy ? "emerald" : "rose",
       boostedConfidence: 85
     };
   }

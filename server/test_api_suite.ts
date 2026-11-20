@@ -61,8 +61,9 @@ async function runApiTestSuite() {
 
   // 5. Check AI Predict API (Local Node/Python endpoint)
   await testEndpoint("POST /api/predict (AI Next Candle Predictor)", async () => {
-    const sampleCandles = Array.from({ length: 20 }, (_, i) => ({
-      timestamp: Date.now() - (20 - i) * 60000,
+    const sampleCandles = Array.from({ length: 35 }, (_, i) => ({
+      time: Math.floor(Date.now() / 1000) - (35 - i) * 60,
+      timestamp: Date.now() - (35 - i) * 60000,
       open: 65000 + i * 10,
       high: 65020 + i * 10,
       low: 64990 + i * 10,
@@ -85,7 +86,31 @@ async function runApiTestSuite() {
       return false;
     }
     const data = await res.json() as any;
-    return !!data.signal && (data.signal === "BUY" || data.signal === "SELL" || data.signal === "MONITORING");
+    return !!data.signal && (data.signal === "BUY" || data.signal === "SELL" || data.signal === "NO TRADE" || data.signal === "MONITORING");
+  });
+
+  // 6. Check /api/health/api-keys (API Key Connectivity & Health Audit)
+  await testEndpoint("GET /api/health/api-keys (API Key Connectivity & Health Audit)", async () => {
+    const res = await fetch(`${BASE_URL}/api/health/api-keys`);
+    if (!res.ok) return false;
+    const data = await res.json() as any;
+    return data && data.api_connectivity && data.api_connectivity.binance?.status === "CONNECTED";
+  });
+
+  // 7. Check Dedicated AI Bot Predict API (Isolated BTCUSD / XAUUSD Pipeline)
+  await testEndpoint("POST /api/ai-bot/predict (Dedicated Isolated AI Bot Predictor)", async () => {
+    const res = await fetch(`${BASE_URL}/api/ai-bot/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: "BTCUSD",
+        timeframe: "1m",
+        min_confidence: 60.0
+      })
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as any;
+    return data && data.status === "SUCCESS" && typeof data.profit_ratio === "number" && data.profit_ratio >= 60.0;
   });
 
   console.log("\n=======================================================");

@@ -2,7 +2,7 @@ import { Server as HTTPServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { db } from "./db";
 import { instruments, latestPrices } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 interface Client {
   id: string;
@@ -86,6 +86,7 @@ export class WebSocketManager {
 
       // Handle messages from client
       ws.on('message', (data: Buffer) => {
+        client.lastPing = Date.now();
         this.handleClientMessage(client, data.toString());
       });
 
@@ -130,7 +131,12 @@ export class WebSocketManager {
           await this.handleUnsubscription(client, data.symbols);
           break;
           
+        case 'pong':
+          client.lastPing = Date.now();
+          break;
+
         case 'ping':
+          client.lastPing = Date.now();
           this.sendToClient(client, { type: 'pong', timestamp: Date.now() });
           break;
           
@@ -143,19 +149,36 @@ export class WebSocketManager {
     }
   }
 
+  private validSymbolsCache = new Set<string>();
+  private lastSymbolsCacheTime = 0;
+
+  private async getValidSymbolsSet(): Promise<Set<string>> {
+    const now = Date.now();
+    // Cache valid instruments in memory for 60 seconds
+    if (this.validSymbolsCache.size > 0 && now - this.lastSymbolsCacheTime < 60000) {
+      return this.validSymbolsCache;
+    }
+    const allInst = await db.select({ symbol: instruments.symbol }).from(instruments);
+    this.validSymbolsCache = new Set(allInst.map((i: any) => i.symbol));
+    this.lastSymbolsCacheTime = now;
+    return this.validSymbolsCache;
+  }
+
   private async handleSubscription(client: Client, symbols: string[]) {
-    // Validate symbols exist in database
+    // Validate symbols exist in database via ultra-fast in-memory cache
     const validSymbols = await this.validateSymbols(symbols);
     
     validSymbols.forEach(symbol => {
       client.subscriptions.add(symbol);
     });
 
-    // Send current data for subscribed symbols
-    for (const symbol of validSymbols) {
-      const marketData = await this.getCurrentMarketData(symbol);
-      if (marketData) {
-        this.sendMarketData(client, marketData);
+    // Send current data for subscribed symbols in a single batched query
+    if (validSymbols.length > 0) {
+      const marketDataList = await this.getBatchMarketData(validSymbols);
+      for (const marketData of marketDataList) {
+        if (marketData && marketData.price > 0) {
+          this.sendMarketData(client, marketData);
+        }
       }
     }
 
@@ -171,24 +194,15 @@ export class WebSocketManager {
   }
 
   private async validateSymbols(symbols: string[]): Promise<string[]> {
-    const validSymbols: string[] = [];
-    
-    for (const symbol of symbols) {
-      const instrument = await db.select()
-        .from(instruments)
-        .where(eq(instruments.symbol, symbol))
-        .limit(1);
-      
-      if (instrument.length > 0) {
-        validSymbols.push(symbol);
-      }
-    }
-    
-    return validSymbols;
+    if (!symbols || symbols.length === 0) return [];
+    const validSet = await this.getValidSymbolsSet();
+    return symbols.filter(s => validSet.has(s));
   }
 
-  private async getCurrentMarketData(symbol: string) {
-    const result = await db
+  private async getBatchMarketData(symbols: string[]) {
+    if (!symbols || symbols.length === 0) return [];
+
+    const results = await db
       .select({
         symbol: instruments.symbol,
         price: latestPrices.price,
@@ -198,28 +212,29 @@ export class WebSocketManager {
       })
       .from(instruments)
       .leftJoin(latestPrices, eq(instruments.id, latestPrices.instrumentId))
-      .where(eq(instruments.symbol, symbol))
-      .limit(1);
+      .where(inArray(instruments.symbol, symbols));
 
-    if (result.length === 0) return null;
-
-    const { price, changeAbs, changePct, asOf } = result[0];
-    
-    return {
-      symbol,
-      price: parseFloat(price?.toString() || '0'),
-      change: parseFloat(changeAbs?.toString() || '0'),
-      changePercent: parseFloat(changePct?.toString() || '0'),
+    const now = Date.now();
+    return results.map((r: any) => ({
+      symbol: r.symbol,
+      price: parseFloat(r.price?.toString() || '0'),
+      change: parseFloat(r.changeAbs?.toString() || '0'),
+      changePercent: parseFloat(r.changePct?.toString() || '0'),
       volume: Math.floor(Math.random() * 1000000), // Mock volume
-      timestamp: asOf?.getTime() || Date.now()
-    };
+      timestamp: r.asOf?.getTime() || now
+    }));
+  }
+
+  private async getCurrentMarketData(symbol: string) {
+    const list = await this.getBatchMarketData([symbol]);
+    return list.length > 0 ? list[0] : null;
   }
 
   private startPriceUpdates() {
-    // Update prices every 5 seconds for subscribed symbols
+    // Update prices every 1 second for subscribed symbols
     this.priceUpdateInterval = setInterval(async () => {
       await this.updatePrices();
-    }, 5000);
+    }, 1000);
   }
 
   private async updatePrices() {
@@ -231,27 +246,31 @@ export class WebSocketManager {
       });
     });
 
-    // Broadcast verified live prices from database (synchronized by background worker)
-    for (const symbol of Array.from(allSubscriptions)) {
-      const currentData = await this.getCurrentMarketData(symbol);
+    const symbolsList = Array.from(allSubscriptions);
+    if (symbolsList.length === 0) return;
+
+    // Single batched query across all active subscriptions
+    const batchData = await this.getBatchMarketData(symbolsList);
+    const now = Date.now();
+
+    for (const currentData of batchData) {
       if (!currentData || !currentData.price) continue;
 
-      // Ensure exact synchronization without artificial drift
       const updatedData = {
         ...currentData,
-        timestamp: Date.now()
+        timestamp: now
       };
 
       // Broadcast to all subscribed clients
-      this.broadcastToSubscribers(symbol, {
+      this.broadcastToSubscribers(currentData.symbol, {
         type: 'market_data',
-        symbol,
+        symbol: currentData.symbol,
         data: updatedData
       } as MarketDataUpdate);
 
       // Occasionally generate institutional trade volume updates
       if (Math.random() < 0.15) {
-        this.generateTradeUpdate(symbol, updatedData.price);
+        this.generateTradeUpdate(currentData.symbol, updatedData.price);
       }
     }
   }
@@ -273,11 +292,16 @@ export class WebSocketManager {
   }
 
   private broadcastToSubscribers(symbol: string, message: WSMessage) {
-    Array.from(this.clients.values()).forEach(client => {
+    const payloadStr = JSON.stringify(message);
+    for (const client of Array.from(this.clients.values())) {
       if (client.subscriptions.has(symbol) && client.ws.readyState === WebSocket.OPEN) {
-        this.sendToClient(client, message);
+        try {
+          client.ws.send(payloadStr);
+        } catch (error) {
+          console.error(`[WS] Error sending to client ${client.id}:`, error);
+        }
       }
-    });
+    }
   }
 
   private sendMarketData(client: Client, data: any) {
@@ -308,12 +332,20 @@ export class WebSocketManager {
   private pingClients() {
     const now = Date.now();
     Array.from(this.clients.entries()).forEach(([clientId, client]) => {
-      if (now - client.lastPing > 60000) { // No pong for 60 seconds
-        console.log(`[WS] Removing inactive client: ${clientId}`);
-        client.ws.terminate();
+      // Allow 120 seconds of silence before clean closure
+      if (now - client.lastPing > 120000) {
+        console.log(`[WS] Gracefully closing inactive client: ${clientId}`);
+        try {
+          client.ws.close(1000, "Inactivity timeout");
+        } catch {
+          try { client.ws.terminate(); } catch {}
+        }
         this.clients.delete(clientId);
       } else if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.ping();
+        try {
+          client.ws.ping();
+          this.sendToClient(client, { type: 'ping', timestamp: now });
+        } catch {}
       }
     });
   }
@@ -324,6 +356,22 @@ export class WebSocketManager {
       totalSubscriptions: Array.from(this.clients.values())
         .reduce((total, client) => total + Array.from(client.subscriptions).length, 0)
     };
+  }
+
+  public broadcastPrice(symbol: string, price: number, changeAbs: number = 0, changePct: number = 0) {
+    if (!symbol || !price || isNaN(price) || price <= 0) return;
+    const now = Date.now();
+    this.broadcastToSubscribers(symbol, {
+      type: 'market_data',
+      symbol,
+      data: {
+        symbol,
+        price,
+        change: changeAbs,
+        changePercent: changePct,
+        timestamp: now
+      }
+    } as MarketDataUpdate);
   }
 
   public shutdown() {
@@ -344,6 +392,15 @@ export class WebSocketManager {
   }
 }
 
+export let globalWsManager: WebSocketManager | null = null;
+
+export function broadcastPriceTick(symbol: string, price: number, changeAbs: number = 0, changePct: number = 0) {
+  if (globalWsManager) {
+    globalWsManager.broadcastPrice(symbol, price, changeAbs, changePct);
+  }
+}
+
 export function setupWebSocket(server: HTTPServer) {
-  return new WebSocketManager(server);
+  globalWsManager = new WebSocketManager(server);
+  return globalWsManager;
 }

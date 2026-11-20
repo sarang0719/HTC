@@ -18,5 +18,15 @@ python-ai/data/
 .env.*
 !.env.example
 firebase-service-account.json
-*.pem
 *.key.local
+
+# Test / audit artifacts
+*_report.json
+*_result.json
+TEST_*
+
+# IDE & Agent workspace internals
+.agent/
+.agents/
+.gemini/
+.gsd/

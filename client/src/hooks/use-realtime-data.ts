@@ -30,26 +30,39 @@ export function useRealtimeMarketData(symbols: string[]) {
   const [orderBook, setOrderBook] = useState<Record<string, OrderBookData>>({});
   const [recentTrades, setRecentTrades] = useState<Record<string, TradeData[]>>({});
   const wsRef = useRef<WebSocket | null>(null);
+  const heartbeatRef = useRef<any>(null);
+  const reconnectRef = useRef<any>(null);
 
   const connectWebSocket = useCallback(() => {
-    const wsUrl = process.env.NODE_ENV === "production" 
-      ? `wss://api.trading-platform.com/ws`
-      : `ws://localhost:3000/ws`;
+    if (typeof window === "undefined") return;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     wsRef.current = new WebSocket(wsUrl);
 
     wsRef.current.onopen = () => {
-      console.log("WebSocket connected");
       // Subscribe to symbols
       wsRef.current?.send(JSON.stringify({
         type: "subscribe",
         symbols: symbols
       }));
+
+      // Periodic heartbeat
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          try { wsRef.current.send(JSON.stringify({ type: "ping" })); } catch {}
+        }
+      }, 15000);
     };
 
     wsRef.current.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.type === "ping") {
+          wsRef.current?.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
         
         switch (data.type) {
           case "market_data":
@@ -77,22 +90,22 @@ export function useRealtimeMarketData(symbols: string[]) {
             break;
             
           case "error":
-            console.error("WebSocket error:", data.message);
             break;
         }
       } catch (error) {
-        console.error("Error parsing WebSocket message:", error);
       }
     };
 
-    wsRef.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
+    wsRef.current.onerror = () => {
     };
 
     wsRef.current.onclose = () => {
-      console.log("WebSocket disconnected");
-      // Attempt to reconnect after 3 seconds
-      setTimeout(connectWebSocket, 3000);
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      reconnectRef.current = setTimeout(connectWebSocket, 3000);
     };
   }, [symbols]);
 
@@ -100,8 +113,27 @@ export function useRealtimeMarketData(symbols: string[]) {
     connectWebSocket();
 
     return () => {
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      if (reconnectRef.current) {
+        clearTimeout(reconnectRef.current);
+        reconnectRef.current = null;
+      }
       if (wsRef.current) {
-        wsRef.current.close();
+        const socket = wsRef.current;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.onopen = () => {
+            try { socket.close(); } catch {}
+          };
+        } else if (socket.readyState === WebSocket.OPEN) {
+          try { socket.close(); } catch {}
+        }
+        wsRef.current = null;
       }
     };
   }, [connectWebSocket]);

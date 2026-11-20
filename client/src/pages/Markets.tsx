@@ -104,109 +104,39 @@ export default function Markets() {
   useEffect(() => {
     if (!instruments.data) return;
     let isActive = true;
-    let wsBinance: WebSocket | null = null;
     let wsTwelve: WebSocket | null = null;
-    let binanceRecoTimer: ReturnType<typeof setTimeout> | null = null;
     let twelveRecoTimer:  ReturnType<typeof setTimeout> | null = null;
     let wsInitTimer:      ReturnType<typeof setTimeout> | null = null;
-    let binanceDelay = 1000;
     let twelveDelay  = 1000;
 
-    const binanceInsts = instruments.data.filter((i: any) => i.exchange === "BINANCE" && i.symbol !== "XAUUSD");
-    const tdInsts      = instruments.data.filter((i: any) => i.exchange !== "BINANCE" && i.exchange !== "OTC");
-
-    // ── Binance !miniTicker (all symbols at once) ──────────────────────────
-    const connectBinance = () => {
-      if (!isActive || binanceInsts.length === 0) return;
-      if (typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1") return;
-
+    // ── Local Server WebSocket (All Assets: Crypto, Forex, Metals, Stocks) ─────
+    const connectLocalWs = () => {
+      if (!isActive || !instruments.data || instruments.data.length === 0) return;
       try {
-        wsBinance = new WebSocket("wss://stream.binance.com:9443/ws/!miniTicker@arr");
-
-        wsBinance.onopen = () => { binanceDelay = 1000; };
-
-        wsBinance.onmessage = (event) => {
-          if (!isActive) return;
-          try {
-            const msg = JSON.parse(event.data);
-            if (Array.isArray(msg)) {
-              setLiveData(prev => {
-                let updated = false;
-                const next = { ...prev };
-                msg.forEach((t: any) => {
-                  const inst = binanceInsts.find((i: any) => i.symbol === t.s);
-                  if (inst) {
-                    updated = true;
-                    const val = parseFloat(t.c);
-                    const old = next[inst.id] || { price: val, changePct: 0, sparkline: Array(20).fill(val.toString()) };
-                    const newSpark = [...old.sparkline, val.toString()];
-                    if (newSpark.length > 20) newSpark.shift();
-                    next[inst.id] = { ...old, price: val, changePct: parseFloat(t.P), sparkline: newSpark };
-                  }
-                });
-                return updated ? next : prev;
-              });
-            }
-          } catch {}
-        };
-
-        wsBinance.onclose = () => {
-          if (!isActive) return;
-          if (typeof sessionStorage !== "undefined" && sessionStorage.getItem("binance_ws_blocked") === "1") return;
-          binanceRecoTimer = setTimeout(() => {
-            binanceDelay = Math.min(binanceDelay * 2, 30000);
-            connectBinance();
-          }, binanceDelay);
-        };
-
-        wsBinance.onerror = () => {
-          if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-          if (wsBinance) {
-            wsBinance.onclose = null;
-            try { wsBinance.close(); } catch {}
-            wsBinance = null;
-          }
-        };
-      } catch {
-        if (typeof sessionStorage !== "undefined") sessionStorage.setItem("binance_ws_blocked", "1");
-      }
-    };
-
-    // ── TwelveData (Forex / Metals / Stocks) ──────────────────────────────
-    const connectTwelve = () => {
-      if (!isActive || tdInsts.length === 0) return;
-      const symbolsList = tdInsts.map((i: any) => {
-        let sym = i.symbol;
-        if ((i.assetClass === "FOREX" || ["XAUUSD","XAGUSD","WTIUSD"].includes(sym))
-            && sym.length >= 6 && !sym.includes("/")) {
-          sym = sym.substring(0, 3) + "/" + sym.substring(3);
-        }
-        return sym;
-      }).join(",");
-
-      try {
-        const apiKey = import.meta.env.VITE_TWELVEDATA_API_KEY || "4a3bb708bb7247528d0efe958476bdaa";
-        wsTwelve = new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${apiKey}`);
+        const localWsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const localWsUrl = `${localWsProto}//${window.location.host}/ws`;
+        wsTwelve = new WebSocket(localWsUrl);
 
         wsTwelve.onopen = () => {
           twelveDelay = 1000;
-          wsTwelve?.send(JSON.stringify({ action: "subscribe", params: { symbols: symbolsList } }));
+          const symbols = instruments.data.map((i: any) => i.symbol);
+          wsTwelve?.send(JSON.stringify({ type: "subscribe", symbols }));
         };
 
         wsTwelve.onmessage = (event) => {
           if (!isActive) return;
           try {
-            const data = JSON.parse(event.data);
-            if (data.event === "price" && data.symbol) {
-              const normalizedSym = data.symbol.replace("/", "");
-              const inst = tdInsts.find((i: any) => i.symbol === normalizedSym || i.symbol === data.symbol);
+            const msg = JSON.parse(event.data);
+            if (msg.type === "market_data" && msg.symbol && msg.data?.price) {
+              const inst = instruments.data.find((i: any) => i.symbol === msg.symbol);
               if (inst) {
                 setLiveData(prev => {
-                  const val = parseFloat(data.price);
+                  const val = parseFloat(msg.data.price);
                   const old = prev[inst.id] || { price: val, changePct: 0, sparkline: Array(20).fill(val.toString()) };
                   const newSpark = [...old.sparkline, val.toString()];
                   if (newSpark.length > 20) newSpark.shift();
-                  return { ...prev, [inst.id]: { ...old, price: val, changePct: old.price ? ((val - old.price) / old.price) * 100 : 0, sparkline: newSpark } };
+                  const pct = typeof msg.data.changePercent === "number" ? msg.data.changePercent : (old.price ? ((val - old.price) / old.price) * 100 : 0);
+                  return { ...prev, [inst.id]: { ...old, price: val, changePct: pct, sparkline: newSpark } };
                 });
               }
             }
@@ -217,14 +147,14 @@ export default function Markets() {
           if (!isActive) return;
           twelveRecoTimer = setTimeout(() => {
             twelveDelay = Math.min(twelveDelay * 2, 30000);
-            connectTwelve();
+            connectLocalWs();
           }, twelveDelay);
         };
 
         wsTwelve.onerror = () => {
           if (wsTwelve) wsTwelve.onclose = null;
           if (!isActive) return;
-          twelveRecoTimer = setTimeout(() => { twelveDelay = Math.min(twelveDelay * 2, 30000); connectTwelve(); }, twelveDelay);
+          twelveRecoTimer = setTimeout(() => { twelveDelay = Math.min(twelveDelay * 2, 30000); connectLocalWs(); }, twelveDelay);
         };
       } catch {}
     };
@@ -233,27 +163,13 @@ export default function Markets() {
     // before creating any WebSocket — eliminates "closed before established" warnings
     wsInitTimer = setTimeout(() => {
       if (!isActive) return;
-      connectBinance();
-      connectTwelve();
+      connectLocalWs();
     }, 150);
 
     return () => {
       isActive = false;
-      if (wsInitTimer)      clearTimeout(wsInitTimer);
-      if (binanceRecoTimer) clearTimeout(binanceRecoTimer);
-      if (twelveRecoTimer)  clearTimeout(twelveRecoTimer);
-      if (wsBinance) {
-        const socket = wsBinance;
-        socket.onclose = null;
-        socket.onerror = null;
-        if (socket.readyState === WebSocket.CONNECTING) {
-          socket.onopen = () => {
-            try { socket.close(); } catch {}
-          };
-        } else if (socket.readyState === WebSocket.OPEN) {
-          try { socket.close(); } catch {}
-        }
-      }
+      if (wsInitTimer)     clearTimeout(wsInitTimer);
+      if (twelveRecoTimer) clearTimeout(twelveRecoTimer);
       if (wsTwelve) {
         const socket = wsTwelve;
         socket.onclose = null;

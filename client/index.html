@@ -4,9 +4,98 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Architects+Daughter&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Fira+Code:wght@300..700&family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Lora:ital,wght@0,400..700;1,400..700&family=Merriweather:ital,opsz,wght@0,18..144,300..900;1,18..144,300..900&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Open+Sans:ital,wght@0,300..800;1,300..800&family=Outfit:wght@100..900&family=Oxanium:wght@200..800&family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&family=Roboto:ital,wght@0,100..900;1,100..900&family=Source+Code+Pro:ital,wght@0,200..900;1,200..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=Space+Grotesk:wght@300..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+    <script>
+      // Cleanly suppress benign 3rd-party widget noise, ResizeObserver & preconnect errors in Safari/Chrome
+      (function() {
+        var isBenignNoise = function(err) {
+          if (!err) return false;
+          var msg = typeof err === 'string' ? err : (err.message || err.description || '');
+          if (typeof msg !== 'string') {
+            try { msg = JSON.stringify(err); } catch(e) { msg = String(err); }
+          }
+          return (
+            msg.indexOf('ResizeObserver') !== -1 ||
+            msg.indexOf('tradingview') !== -1 ||
+            msg.indexOf('pushstream') !== -1 ||
+            msg.indexOf('support-portal') !== -1 ||
+            msg.indexOf('conversions_en') !== -1 ||
+            msg.indexOf('IncidentsModel') !== -1 ||
+            msg.indexOf('ChartModel') !== -1 ||
+            msg.indexOf('preconnect') !== -1 ||
+            msg.indexOf('Failed to preconnect') !== -1 ||
+            msg.indexOf('advanced-chart') !== -1 ||
+            (msg.indexOf('TypeError: Load failed') !== -1 && (msg.indexOf('support') !== -1 || msg.indexOf('tradingview') !== -1 || msg.indexOf('s3.') !== -1))
+          );
+        };
+
+        window.addEventListener('error', function(event) {
+          if (isBenignNoise(event.error) || isBenignNoise(event.message)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return false;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          if (isBenignNoise(event.reason)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return false;
+          }
+        }, true);
+
+        var _origOnError = window.onerror;
+        window.onerror = function(msg, source, lineno, colno, error) {
+          if (isBenignNoise(msg) || isBenignNoise(error)) {
+            return true;
+          }
+          if (_origOnError) {
+            return _origOnError.apply(this, arguments);
+          }
+          return false;
+        };
+
+        var _origConsoleError = console.error;
+        console.error = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (isBenignNoise(arguments[i])) {
+              return;
+            }
+          }
+          _origConsoleError.apply(console, arguments);
+        };
+
+        var _origConsoleWarn = console.warn;
+        console.warn = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            if (isBenignNoise(arguments[i])) {
+              return;
+            }
+          }
+          _origConsoleWarn.apply(console, arguments);
+        };
+
+        if (typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined') {
+          var _OrigWS = window.WebSocket;
+          var WrappedWebSocket = function(url, protocols) {
+            var instance = protocols !== undefined ? new _OrigWS(url, protocols) : new _OrigWS(url);
+            if (typeof url === 'string' && (url.indexOf('tradingview') !== -1 || url.indexOf('pushstream') !== -1)) {
+              instance.addEventListener('error', function(e) {
+                e.stopImmediatePropagation();
+              }, true);
+            }
+            return instance;
+          };
+          WrappedWebSocket.prototype = _OrigWS.prototype;
+          WrappedWebSocket.CONNECTING = _OrigWS.CONNECTING;
+          WrappedWebSocket.OPEN = _OrigWS.OPEN;
+          WrappedWebSocket.CLOSING = _OrigWS.CLOSING;
+          WrappedWebSocket.CLOSED = _OrigWS.CLOSED;
+          window.WebSocket = WrappedWebSocket;
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

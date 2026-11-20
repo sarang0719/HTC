@@ -28,14 +28,14 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
   // Add context to request for use in other middleware
   (req as any).logContext = context;
 
-  // Log request
-  console.log(`[${context.requestId}] ${context.method} ${context.url} - ${context.ip} - ${context.userAgent}`);
-
-  // Log response when finished
+  // Log response when finished (skip noisy health pings)
   res.on('finish', () => {
+    if (req.url === '/health' || req.url === '/ping') return;
     const duration = Date.now() - startTime;
     const logLevel = res.statusCode >= 400 ? 'ERROR' : 'INFO';
-    console.log(`[${context.requestId}] ${logLevel} ${res.statusCode} ${context.method} ${context.url} - ${duration}ms`);
+    if (res.statusCode >= 400 || duration > 500) {
+      console.log(`[${context.requestId}] ${logLevel} ${res.statusCode} ${context.method} ${context.url} - ${duration}ms`);
+    }
   });
 
   next();

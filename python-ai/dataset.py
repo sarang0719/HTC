@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import timezone
 from typing import Dict, Any, Optional
 import numpy as np
 import pandas as pd
@@ -13,7 +14,32 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; InstitutionalTradingAI/3.0)"})
 
+def _load_env():
+    env_paths = [
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
+        os.path.join(os.getcwd(), ".env")
+    ]
+    for p in env_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip('"').strip("'")
+                            if k and k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+
+_load_env()
+
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "4a3bb708bb7247528d0efe958476bdaa")
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "4ZxKHsnocjAIQAVfcdfy1yh5Yf5AlfryUWa7cYmAlwbsSmAHwgNHnjIJHhBJGATW")
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "X0VZ7P494AUCZCPM")
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "d9c7kppr01qs0pv947ogd9c7kppr01qs0pv947p0")
 
 # Cached CCXT exchange instance
 EXCHANGE_INSTANCE: Optional[ccxt.binance] = None
@@ -284,9 +310,11 @@ def fetch_historical_data(
     tf_clean = timeframe.lower()
     if tf_clean in ["60m"]: tf_clean = "1h"
     elif tf_clean in ["240m"]: tf_clean = "4h"
+    elif tf_clean in ["1day", "d"]: tf_clean = "1d"
 
-    # Check local cache first if sufficient fresh candles available
-    if use_cache:
+    # Check local cache only if requesting bulk historical training datasets (limit >= 3000)
+    # For live real-time market analysis and inference (limit < 3000), ALWAYS fetch live exchange data!
+    if use_cache and limit >= 3000:
         cached_df = load_cached_data(symbol, tf_clean)
         if cached_df is not None and len(cached_df) >= limit:
             return cached_df.tail(limit).reset_index(drop=True)
@@ -296,22 +324,23 @@ def fetch_historical_data(
     td_sym = norm.get("twelvedata")
 
     # Priority 1 for Forex & Metals: TwelveData (Genuine Live Interbank Feeds)
-    if (is_forex or is_metals) and td_sym and TWELVEDATA_API_KEY:
+    if (is_forex or is_metals) and td_sym and TWELVEDATA_API_KEY and limit <= 5000:
         try:
             td_int_map = {
                 "1m": "1min", "2m": "1min", "3m": "5min", "5m": "5min",
                 "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"
             }
             td_int = td_int_map.get(tf_clean, "5min")
-            url = f"https://api.twelvedata.com/time_series?symbol={td_sym}&interval={td_int}&outputsize={min(5000, limit)}&apikey={TWELVEDATA_API_KEY}"
+            url = f"https://api.twelvedata.com/time_series?symbol={td_sym}&interval={td_int}&outputsize={min(5000, limit)}&timezone=UTC&apikey={TWELVEDATA_API_KEY}"
             resp = SESSION.get(url, timeout=12)
             if resp.status_code == 200:
                 raw_d = resp.json()
                 if "values" in raw_d and isinstance(raw_d["values"], list) and raw_d["values"]:
                     rows = []
-                    for v in raw_d["values"]:
+                    # TwelveData returns values newest-first (descending); reverse to chronological ascending
+                    for v in reversed(raw_d["values"]):
                         rows.append((
-                            pd.to_datetime(v["datetime"]),
+                            pd.to_datetime(v["datetime"], utc=True),
                             float(v["open"]),
                             float(v["high"]),
                             float(v["low"]),
@@ -322,7 +351,7 @@ def fetch_historical_data(
                         df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                         df = validate_ohlcv(df)
                         # Check freshness (within 14 days)
-                        if not df.empty and df['timestamp'].max() >= pd.Timestamp.now() - pd.Timedelta(days=14):
+                        if not df.empty and df['timestamp'].max() >= pd.Timestamp.now(timezone.utc) - pd.Timedelta(days=14):
                             if len(df) >= min(100, limit // 4):
                                 if use_cache:
                                     save_cached_data(symbol, tf_clean, df)
@@ -335,21 +364,50 @@ def fetch_historical_data(
     if "binance_alt" in norm:
         bin_symbols_to_try.append(norm["binance_alt"])
 
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY} if BINANCE_API_KEY else {}
+    bin_hosts = ["api3.binance.com", "data-api.binance.vision", "api1.binance.com"]
+
     for bin_symbol in bin_symbols_to_try:
         try:
             all_rows = []
             end_time = None
             consecutive_empty = 0
+            h_idx = 0
+            retries = 0
 
             while len(all_rows) < limit:
                 batch_size = min(1000, limit - len(all_rows))
-                url = f"https://api3.binance.com/api/v3/klines?symbol={bin_symbol}&interval={tf_clean}&limit={batch_size}"
+                curr_host = bin_hosts[h_idx % len(bin_hosts)]
+                url = f"https://{curr_host}/api/v3/klines?symbol={bin_symbol}&interval={tf_clean}&limit={batch_size}"
                 if end_time is not None:
                     url += f"&endTime={end_time}"
                 
-                resp = SESSION.get(url, timeout=6)
-                if resp.status_code != 200:
-                    break
+                try:
+                    resp = SESSION.get(url, headers=headers, timeout=6)
+                except Exception:
+                    h_idx += 1
+                    retries += 1
+                    time.sleep(0.5)
+                    if retries > 6:
+                        break
+                    continue
+
+                if resp.status_code == 429:
+                    time.sleep(2)
+                    h_idx += 1
+                    retries += 1
+                    if retries > 6:
+                        break
+                    continue
+                elif resp.status_code != 200:
+                    h_idx += 1
+                    retries += 1
+                    time.sleep(0.3)
+                    if retries > 6:
+                        break
+                    continue
+
+                retries = 0
                 raw_data = resp.json()
                 if not isinstance(raw_data, list) or not raw_data:
                     consecutive_empty += 1
@@ -367,6 +425,7 @@ def fetch_historical_data(
                 end_time = int(raw_data[0][0]) - 1
                 if len(raw_data) < batch_size:
                     break
+                time.sleep(0.04)
 
             if all_rows:
                 df = pd.DataFrame(all_rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])

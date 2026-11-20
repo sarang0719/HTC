@@ -2,6 +2,7 @@ import { db } from "./db";
 import { users, latestPrices, timeBasedOrders, instruments } from "@shared/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { storage } from "./storage";
+import { fetchBinanceKlinesFast } from "./routes/market-data.routes";
 
 /**
  * IMPORTANT: this engine trades REAL user wallet balances automatically.
@@ -23,8 +24,8 @@ export function startAiBotEngine() {
       const activeUsers = await db.select().from(users).where(eq(users.autoTradeEnabled, true));
       if (activeUsers.length === 0) return; 
       
-      // 2. Expanded Symbol Universe — Crypto, Forex, Commodities
-      const topSymbols = ["BTCUSD", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "EURUSD", "GBPUSD", "XAUUSD", "XAUTUSDC", "XAUTUSDT"];
+      // 2. Focused Symbol Universe — BTCUSD and XAUUSD Only
+      const topSymbols = ["BTCUSD", "XAUUSD"];
       
       for (const sym of topSymbols) {
         const [inst] = await db.select().from(instruments).where(eq(instruments.symbol, sym));
@@ -34,56 +35,40 @@ export function startAiBotEngine() {
         if (!priceData || !priceData.price) continue;
         
         const price = Number(priceData.price);
-        const sparkline = (priceData.sparkline as string[]) || [];
-        // 3. ── Canonical AI Engine Integration (Rule 32) ──
-        // Node AI Bot consumes the canonical Python Prediction API rather than generating conflicting signals
-        const prices: number[] = sparkline.map(Number);
-        if (prices.length < 5) continue;
 
-        const pyPort = process.env.PYTHON_PORT || "8008";
-        const pyUrl = process.env.PYTHON_AI_URL || `http://127.0.0.1:${pyPort}`;
-
-        const candles = prices.map((p: number, idx: number) => ({
-          open: idx > 0 ? prices[idx - 1] : p,
-          high: Math.max(p, idx > 0 ? prices[idx - 1] : p),
-          low: Math.min(p, idx > 0 ? prices[idx - 1] : p),
-          close: p,
-          volume: 1000,
-          time: Math.floor(Date.now() / 1000) - (prices.length - idx) * 60
-        }));
-
+        // 3. ── Dedicated AI Bot Prediction API (Strictly for BTCUSD & XAUUSD) ──
         let signal: "BUY" | "SELL" | null = null;
         let reason = "";
 
         try {
-          const resp = await fetch(`${pyUrl}/api/predict`, {
+          const pyUrl = process.env.PYTHON_AI_URL || "http://127.0.0.1:8008";
+          const resp = await fetch(`${pyUrl}/api/ai-bot/predict`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              market: sym,
-              timeframe: "5m",
-              candles
+              symbol: sym,
+              timeframe: "1m",
+              min_confidence: 60.0
             }),
-            signal: AbortSignal.timeout(3000)
+            signal: AbortSignal.timeout(4000)
           });
 
           if (resp.ok) {
             const aiData: any = await resp.json();
-            if (aiData.signal === "BUY" && (aiData.signal_quality === "HIGH" || aiData.signal_quality === "MODERATE" || aiData.signal_quality === "MEDIUM")) {
-              signal = "BUY";
-              reason = `Canonical AI Model (${aiData.model_version || "v3"}) · ${aiData.regime || "TREND"} (${aiData.mtf_alignment || "MTF"} MTF)`;
-            } else if (aiData.signal === "SELL" && (aiData.signal_quality === "HIGH" || aiData.signal_quality === "MODERATE" || aiData.signal_quality === "MEDIUM")) {
-              signal = "SELL";
-              reason = `Canonical AI Model (${aiData.model_version || "v3"}) · ${aiData.regime || "TREND"} (${aiData.mtf_alignment || "MTF"} MTF)`;
+            const conf = Number(aiData.confidence ?? 50);
+            const profitRatio = Number(aiData.profit_ratio ?? 60);
+            if (aiData.trade_recommended && (aiData.signal === "BUY" || aiData.signal === "SELL")) {
+              signal = aiData.signal;
+              reason = `Dedicated AI Bot Engine · ${aiData.symbol} (Profit Ratio: ${profitRatio.toFixed(1)}%, Conf: ${conf.toFixed(1)}%, MTF: ${aiData.mtf_confluence || "Confluent"})`;
             } else {
-              // Rule 17: Canonical engine returned NO TRADE or low edge — abstain from trading!
+              // Dedicated engine returned NO_TRADE or edge < 60% — abstain from trading!
               continue;
             }
           } else {
             continue;
           }
         } catch {
-          // Rule 7: If Python AI engine is offline or timing out, safely abstain without fabricating trades
+          // If Python AI engine is offline or timing out, safely abstain without fabricating trades
           continue;
         }
 
@@ -125,8 +110,10 @@ export function startAiBotEngine() {
               const risk = await storage.checkRiskManagement(user.id);
               if (!risk.allowed) continue;
 
-              // Shorter 30s trades for faster profit cycles
-              const expiresAt = new Date(Date.now() + 30 * 1000);
+              // Candle-synchronized expiry: close strictly at candle close!
+              const nowSec = Math.floor(Date.now() / 1000);
+              const remainingSecs = Math.max(15, 60 - (nowSec % 60));
+              const expiresAt = new Date(Date.now() + remainingSecs * 1000);
 
               let amountNum = parseFloat(user.autoTradeAmount || "0.00");
               if (amountNum < 1.0) continue; // Safety: skip if not configured
@@ -165,12 +152,20 @@ export function startAiBotEngine() {
               const COMMISSION_RATE = 0.30; // keep this configurable from an admin settings table, not hardcoded, if it can change
               const commission = amountNum * COMMISSION_RATE;
               const totalDeduct = amountNum + commission;
-
-              if (parseFloat(user.walletBalance as string) < totalDeduct) {
-                 await db.update(users).set({ autoTradeEnabled: false }).where(eq(users.id, user.id));
-                 continue;
+              const isDemo = user.tradeMode === "DEMO";
+              if (isDemo) {
+                if (parseFloat(user.demoBalance as string || "0") < amountNum) {
+                  await db.update(users).set({ autoTradeEnabled: false }).where(eq(users.id, user.id));
+                  continue;
+                }
+                await storage.updateDemoBalance(user.id, -amountNum);
+              } else {
+                if (parseFloat(user.walletBalance as string || "0") < totalDeduct) {
+                  await db.update(users).set({ autoTradeEnabled: false }).where(eq(users.id, user.id));
+                  continue;
+                }
+                await storage.updateWalletBalance(user.id, -totalDeduct);
               }
-              await storage.updateWalletBalance(user.id, -totalDeduct);
 
               const order = await storage.createTimeBasedOrder(user.id, {
                 instrumentId: inst.id,
@@ -186,14 +181,14 @@ export function startAiBotEngine() {
               // Log Investment Transaction
               await storage.createWalletTransaction({
                  userId: user.id, type: "TRADE_DEDUCTION", amount: String(amountNum),
-                 status: "SUCCESS", referenceId: String(order.id)
+                 status: "SUCCESS", referenceId: String(order.id), mode: isDemo ? "DEMO" : "REAL"
               } as any);
 
-              // Log Commission Transaction
-              if (commission > 0) {
+              // Log Commission Transaction for real trades
+              if (!isDemo && commission > 0) {
                  await storage.createWalletTransaction({
                     userId: user.id, type: "COMMISSION", amount: String(commission),
-                    status: "SUCCESS", referenceId: String(order.id)
+                    status: "SUCCESS", referenceId: String(order.id), mode: "REAL"
                  } as any);
               }
 
