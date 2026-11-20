@@ -176,7 +176,9 @@ export function startBackgroundTasks() {
         if (payload.stream === "paxgusdt@bookTicker" && payload.data) {
           const b = parseFloat(payload.data.b);
           const a = parseFloat(payload.data.a);
-          const midPrice = (b + a) / 2;
+          const spread = Math.abs(a - b);
+          // Spread protection: if book spread is abnormal (> $2.00 or > 0.08%), use bid to prevent ask spikes
+          const midPrice = (spread <= 2.0 && b > 0 && spread / b < 0.0008) ? (b + a) / 2 : b;
           const targets: any[] = [];
           if (cryptoMap.has("XAUTUSDC")) targets.push(cryptoMap.get("XAUTUSDC")!);
           if (cryptoMap.has("XAUTUSDT")) targets.push(cryptoMap.get("XAUTUSDT")!);
@@ -452,7 +454,10 @@ export function startBackgroundTasks() {
               if (bRes.ok) {
                 const bData = await bRes.json() as any;
                 if (bData && bData.bidPrice && bData.askPrice) {
-                  const mid = (parseFloat(bData.bidPrice) + parseFloat(bData.askPrice)) / 2;
+                  const b = parseFloat(bData.bidPrice);
+                  const a = parseFloat(bData.askPrice);
+                  const spread = Math.abs(a - b);
+                  const mid = (spread <= 2.0 && b > 0 && spread / b < 0.0008) ? (b + a) / 2 : b;
                   priceData = {
                     price: String(mid.toFixed(2)),
                     changeAbs: "0.00",

@@ -336,12 +336,16 @@ function LiveTradingChartComponent({
     if (!candle || bucket > candle.time) {
       // Previous candle closes cleanly; new candle opens at previous close
       const open = (candle && candle.close > 0) ? candle.close : price;
+      // Guard: initial tick cannot jump wildly from previous close
+      const maxJump = isCryptoAsset ? 0.015 : 0.004;
+      const safePrice = (open > 0 && Math.abs(price - open) / open > maxJump) ? open : price;
+
       candle = {
         time: bucket,
         open,
-        high: Math.max(open, price),
-        low:  Math.min(open, price),
-        close: price,
+        high: Math.max(open, safePrice),
+        low:  Math.min(open, safePrice),
+        close: safePrice,
         volume: 1
       };
       liveCandle.current = candle;
@@ -350,6 +354,12 @@ function LiveTradingChartComponent({
       } catch {}
     } else {
       // Intra-candle update for current bucket
+      // Guard against rogue spike ticks expanding intra-candle wicks abnormally
+      const maxIntraMove = isCryptoAsset ? 0.02 : 0.005; // 0.5% max single-bar excursion for metals ($18 on Gold)
+      if (candle.open > 0 && Math.abs(price - candle.open) / candle.open > maxIntraMove) {
+        // Discard rogue tick excursion that creates needle wicks
+        return;
+      }
       candle.close = price;
       candle.high  = Math.max(candle.high, price);
       candle.low   = Math.min(candle.low,  price);
@@ -381,10 +391,12 @@ function LiveTradingChartComponent({
     if (!rawPrice || rawPrice <= 0 || isNaN(rawPrice)) return;
     const prev = prevPriceRef.current;
     
-    // Sanity check: reject extreme anomalous price spikes (>35% single-tick outlier jump)
+    // Sanity check: reject anomalous single-tick outlier jumps
+    // Real ticks never jump > 0.4% in 1 tick for metals/forex, or > 1.0% for crypto
     if (prev > 0) {
       const devFromPrev = Math.abs(rawPrice - prev) / prev;
-      if (devFromPrev > 0.35) {
+      const maxTickDev = isCryptoAsset ? 0.01 : 0.004; // 0.4% for metals/forex ($14 on Gold), 1.0% for crypto
+      if (devFromPrev > maxTickDev) {
         // Drop rogue out-of-band spike tick to preserve clean candlestick geometry
         return;
       }
@@ -611,7 +623,7 @@ function LiveTradingChartComponent({
       if (history.length === 0) {
         let fallbackBase = targetPriceRef.current > 0 ? targetPriceRef.current : 0;
         if (fallbackBase <= 0) {
-          if (symUpper.includes("XAU") || symUpper.includes("PAXG") || symUpper.includes("GOLD")) fallbackBase = 3860.0;
+          if (symUpper.includes("XAU") || symUpper.includes("PAXG") || symUpper.includes("GOLD")) fallbackBase = 3580.0;
           else if (symUpper.includes("BTC")) fallbackBase = 66800.0;
           else if (symUpper.includes("ETH")) fallbackBase = 3400.0;
           else if (symUpper.includes("BNB")) fallbackBase = 740.0;
@@ -667,6 +679,13 @@ function LiveTradingChartComponent({
           h = Math.max(o, cl);
           l = Math.min(o, cl);
         }
+
+        // Clamp freak historical outlier wicks (protects against illiquid book spikes or rogue historical ticks)
+        const maxWickRatio = isCryptoAsset ? 0.025 : 0.006; // 0.6% on metals/forex, 2.5% on crypto
+        const maxAllowedHigh = Math.max(o, cl) * (1 + maxWickRatio);
+        const minAllowedLow  = Math.min(o, cl) * (1 - maxWickRatio);
+        if (h > maxAllowedHigh) h = maxAllowedHigh;
+        if (l < minAllowedLow)  l = minAllowedLow;
 
         sanitizedMap.set(t, {
           time: t as UTCTimestamp,
