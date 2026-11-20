@@ -47,6 +47,22 @@ let bgTick = 11;
 export function startBackgroundTasks() {
   console.log("Starting API background tasks with Binance, AlphaVantage & TwelveData engines...");
 
+  // Render Free Tier Keep-Alive (Pings external URL every 10 mins to prevent 15m idle spin-down)
+  const renderUrl = process.env.RENDER_EXTERNAL_URL;
+  if (renderUrl) {
+    console.log(`[KeepAlive] Render self-ping active for ${renderUrl}`);
+    setInterval(async () => {
+      try {
+        const res = await fetch(`${renderUrl}/ping`);
+        if (res.ok) {
+          console.log(`[KeepAlive] Self-ping successful (${res.status})`);
+        }
+      } catch {
+        // Ignore ping failures
+      }
+    }, 10 * 60 * 1000);
+  }
+
 
   const LOGO_MAP: Record<string, string> = {
     "BTCUSD":   "https://assets.coincap.io/assets/icons/btc@2x.png",

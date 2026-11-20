@@ -25,6 +25,10 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Fast-path health probes for Render edge proxy
+app.get("/health", (_req, res) => res.status(200).json({ status: "ok", timestamp: Date.now() }));
+app.get("/ping", (_req, res) => res.status(200).send("pong"));
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -126,13 +130,14 @@ export const initAppPromise = (async () => {
       await setupVite(httpServer, app);
     }
 
-    // PHASE 2: Immediate Port Binding (Prevents 502/504 on Render)
+    // PHASE 2: Explicit 0.0.0.0 Port Binding (Prevents 502/504 on Render edge proxy)
     const port = parseInt(process.env.PORT || "3000", 10);
+    const host = "0.0.0.0";
     httpServer.keepAliveTimeout = 65000;
     httpServer.headersTimeout = 66000;
     if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
-      httpServer.listen(port, () => {
-        log(`serving on port ${port} (IPv4 + IPv6 dual-stack) [Ready for traffic]`);
+      httpServer.listen(port, host, () => {
+        log(`serving on http://${host}:${port} [Ready for traffic]`);
       });
     }
 
