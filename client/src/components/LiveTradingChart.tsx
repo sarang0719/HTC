@@ -891,7 +891,9 @@ function LiveTradingChartComponent({
             } catch {}
           };
 
-          localWs.onerror = () => {};
+          localWs.onerror = (e) => {
+            try { (e as any)?.preventDefault?.(); } catch {}
+          };
           localWs.onclose = () => {
             if (localHeartbeatTimer) {
               clearInterval(localHeartbeatTimer);
@@ -928,10 +930,10 @@ function LiveTradingChartComponent({
         socket.onmessage = null;
         if (socket.readyState === WebSocket.CONNECTING) {
           socket.onopen = () => {
-            try { socket.close(); } catch {}
+            try { socket.close(1000, "Clean unmount"); } catch {}
           };
         } else if (socket.readyState === WebSocket.OPEN) {
-          try { socket.close(); } catch {}
+          try { socket.close(1000, "Clean unmount"); } catch {}
         }
         localWs = null;
       }

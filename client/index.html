@@ -10,6 +10,22 @@
     <script>
       // Cleanly suppress benign 3rd-party widget noise, ResizeObserver & preconnect errors in Safari/Chrome
       (function() {
+        // Prevent ResizeObserver loop notification in WebKit / Safari
+        if (typeof window !== 'undefined' && window.ResizeObserver) {
+          try {
+            var OriginalRO = window.ResizeObserver;
+            window.ResizeObserver = class ResizeObserver extends OriginalRO {
+              constructor(callback) {
+                super(function(entries, observer) {
+                  window.requestAnimationFrame(function() {
+                    callback(entries, observer);
+                  });
+                });
+              }
+            };
+          } catch(e) {}
+        }
+
         var isBenignNoise = function(err) {
           if (!err) return false;
           var msg = typeof err === 'string' ? err : (err.message || err.description || '');
@@ -18,6 +34,8 @@
           }
           return (
             msg.indexOf('ResizeObserver') !== -1 ||
+            msg.indexOf('network connection was lost') !== -1 ||
+            msg.indexOf('The network connection was lost') !== -1 ||
             msg.indexOf('tradingview') !== -1 ||
             msg.indexOf('pushstream') !== -1 ||
             msg.indexOf('support-portal') !== -1 ||

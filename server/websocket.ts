@@ -108,10 +108,10 @@ export class WebSocketManager {
       });
     });
 
-    // Set up ping interval to detect dead connections
+    // Set up ping interval to keep cloud proxies (Render/Cloudflare) active
     setInterval(() => {
       this.pingClients();
-    }, 30000); // Ping every 30 seconds
+    }, 20000); // Ping every 20 seconds
   }
 
   private generateClientId(): string {
@@ -332,8 +332,8 @@ export class WebSocketManager {
   private pingClients() {
     const now = Date.now();
     Array.from(this.clients.entries()).forEach(([clientId, client]) => {
-      // Allow 120 seconds of silence before clean closure
-      if (now - client.lastPing > 120000) {
+      // Allow 600 seconds (10 minutes) of silence before closure to accommodate background/inactive mobile & desktop tabs
+      if (now - client.lastPing > 600000) {
         console.log(`[WS] Gracefully closing inactive client: ${clientId}`);
         try {
           client.ws.close(1000, "Inactivity timeout");

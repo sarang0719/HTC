@@ -324,7 +324,7 @@ export default function StrategyPanel({ symbol, interval = "1d", cfg: cfgProp, c
         prev.onmessage = null;
         prev.onerror   = null;
         prev.onclose   = null;
-        try { prev.close(); } catch { /* ignore */ }
+        try { prev.close(1000, "Clean switch"); } catch { /* ignore */ }
       }
       wsRef.current = null;
       if (destroyRef.current) return;
@@ -339,7 +339,10 @@ export default function StrategyPanel({ symbol, interval = "1d", cfg: cfgProp, c
           ws.send(JSON.stringify({ type: "subscribe", symbols: [symUpper] }));
         };
 
-        ws.onerror = () => { wsRef.current = null; };
+        ws.onerror = (e) => {
+          try { (e as any)?.preventDefault?.(); } catch {}
+          wsRef.current = null;
+        };
         ws.onclose = () => { wsRef.current = null; };
 
         ws.onmessage = (ev: MessageEvent) => {
