@@ -364,16 +364,24 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getInstrumentBySymbol(symbol: string): Promise<{ price?: string, changeAbs?: string, changePct?: string } | undefined> {
-    const [inst] = await db.select().from(instruments).where(eq(instruments.symbol, symbol));
-    if (!inst) return undefined;
-    const [price] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, inst.id));
-    if (!price) return undefined;
+  private instrumentCache = new Map<string, { id: number; symbol: string }>();
+
+  async getInstrumentBySymbol(symbol: string): Promise<{ id: number; price?: string; changeAbs?: string; changePct?: string } | undefined> {
+    const symUpper = symbol.toUpperCase();
+    let instMeta = this.instrumentCache.get(symUpper);
+    if (!instMeta) {
+      const [inst] = await db.select().from(instruments).where(eq(instruments.symbol, symbol));
+      if (!inst) return undefined;
+      instMeta = { id: inst.id, symbol: inst.symbol };
+      this.instrumentCache.set(symUpper, instMeta);
+    }
+    const [price] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, instMeta.id));
     
     return {
-      price: price.price as string,
-      changeAbs: price.changeAbs as string,
-      changePct: price.changePct as string
+      id: instMeta.id,
+      price: price ? (price.price as string) : undefined,
+      changeAbs: price ? (price.changeAbs as string) : undefined,
+      changePct: price ? (price.changePct as string) : undefined
     };
   }
 

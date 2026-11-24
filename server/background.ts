@@ -43,9 +43,65 @@ function getFinalResult(trade: any, finalPrice: number) {
   };
 }
 
+interface PendingPriceUpdate {
+  instrumentId: number;
+  price?: string;
+  changeAbs?: string;
+  changePct?: string;
+  sparkline?: string[];
+  asOf: Date;
+  isOpen?: boolean;
+}
+
+const pendingPriceUpdates = new Map<number, PendingPriceUpdate>();
+
+function queuePriceUpdate(update: PendingPriceUpdate) {
+  const existing = pendingPriceUpdates.get(update.instrumentId);
+  pendingPriceUpdates.set(update.instrumentId, {
+    ...existing,
+    ...update,
+    asOf: new Date(),
+  });
+}
+
+let cachedActiveInstruments: any[] = [];
+let lastActiveInstrumentsFetch = 0;
+async function getCachedActiveInstruments() {
+  const now = Date.now();
+  if (cachedActiveInstruments.length === 0 || now - lastActiveInstrumentsFetch > 60000) {
+    cachedActiveInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
+    lastActiveInstrumentsFetch = now;
+  }
+  return cachedActiveInstruments;
+}
+
 let bgTick = 11;
 export function startBackgroundTasks() {
   console.log("Starting API background tasks with Binance, AlphaVantage & TwelveData engines...");
+
+  // High-performance batched DB flush every 3 seconds to avoid IOPS bottlenecks
+  setInterval(async () => {
+    if (pendingPriceUpdates.size === 0) return;
+    const batch = Array.from(pendingPriceUpdates.values());
+    pendingPriceUpdates.clear();
+
+    for (const item of batch) {
+      try {
+        const payload: Record<string, any> = {
+          asOf: item.asOf,
+          isOpen: item.isOpen ?? true,
+        };
+        if (item.price !== undefined) payload.price = item.price;
+        if (item.changeAbs !== undefined) payload.changeAbs = item.changeAbs;
+        if (item.changePct !== undefined) payload.changePct = item.changePct;
+        if (item.sparkline !== undefined) payload.sparkline = item.sparkline;
+
+        await db.update(latestPrices)
+          .set(payload)
+          .where(eq(latestPrices.instrumentId, item.instrumentId));
+      } catch {}
+    }
+  }, 3000);
 
   // Render Free Tier Keep-Alive (Pings external URL every 10 mins to prevent 15m idle spin-down)
   const renderUrl = process.env.RENDER_EXTERNAL_URL;
@@ -206,14 +262,13 @@ export function startBackgroundTasks() {
             const instId = instrument.id;
             const newSparkline = await updateCachedSparkline(instrument, midPrice, 0);
 
-            await db.update(latestPrices)
-              .set({
-                price: String(midPrice.toFixed(2)),
-                sparkline: newSparkline,
-                asOf: new Date(),
-                isOpen: true
-              })
-              .where(eq(latestPrices.instrumentId, instId));
+            queuePriceUpdate({
+              instrumentId: instId,
+              price: String(midPrice.toFixed(2)),
+              sparkline: newSparkline,
+              asOf: new Date(),
+              isOpen: true,
+            });
 
             broadcastPriceTick(instrument.symbol, midPrice);
           }
@@ -248,16 +303,15 @@ export function startBackgroundTasks() {
             
             const newSparkline = await updateCachedSparkline(instrument, price, changeAbs);
 
-            await db.update(latestPrices)
-              .set({
-                price: String(price),
-                changeAbs: String(changeAbs),
-                changePct: String(changePct),
-                sparkline: newSparkline,
-                asOf: new Date(),
-                isOpen: true 
-              })
-              .where(eq(latestPrices.instrumentId, instId));
+            queuePriceUpdate({
+              instrumentId: instId,
+              price: String(price),
+              changeAbs: String(changeAbs),
+              changePct: String(changePct),
+              sparkline: newSparkline,
+              asOf: new Date(),
+              isOpen: true,
+            });
 
             broadcastPriceTick(instrument.symbol, price, changeAbs, changePct);
           }
@@ -298,7 +352,7 @@ export function startBackgroundTasks() {
       try {
         const msg = JSON.parse(data);
         if (msg.type === "trade" && msg.data) {
-          const allInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
+          const allInstruments = await getCachedActiveInstruments();
           for (const trade of msg.data) {
             const sym = trade.s; // e.g. "BINANCE:PAXGUSDT"
             let dbSym = "";
@@ -326,16 +380,15 @@ export function startBackgroundTasks() {
 
               const newSparkline = await updateCachedSparkline(instrument, price, changeAbs);
 
-              await db.update(latestPrices)
-                .set({
-                  price: String(price),
-                  changeAbs: String(changeAbs),
-                  changePct: String(changePct),
-                  sparkline: newSparkline,
-                  asOf: new Date(),
-                  isOpen: true 
-                })
-                .where(eq(latestPrices.instrumentId, instrument.id));
+              queuePriceUpdate({
+                instrumentId: instrument.id,
+                price: String(price),
+                changeAbs: String(changeAbs),
+                changePct: String(changePct),
+                sparkline: newSparkline,
+                asOf: new Date(),
+                isOpen: true,
+              });
             }
           }
         }
@@ -374,7 +427,7 @@ export function startBackgroundTasks() {
             const price = parseFloat(msg.price);
             if (isNaN(price) || price <= 0) return;
 
-            const allInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
+            const allInstruments = await getCachedActiveInstruments();
             const instrument = allInstruments.find((i: any) => i.symbol === symRaw);
             if (instrument) {
               let changeAbs = 0;
@@ -388,16 +441,15 @@ export function startBackgroundTasks() {
 
               const newSparkline = await updateCachedSparkline(instrument, price, changeAbs);
 
-              await db.update(latestPrices)
-                .set({
-                  price: String(price),
-                  changeAbs: String(changeAbs.toFixed(4)),
-                  changePct: String(changePct.toFixed(2)),
-                  sparkline: newSparkline,
-                  asOf: new Date(),
-                  isOpen: true
-                })
-                .where(eq(latestPrices.instrumentId, instrument.id));
+              queuePriceUpdate({
+                instrumentId: instrument.id,
+                price: String(price),
+                changeAbs: String(changeAbs.toFixed(4)),
+                changePct: String(changePct.toFixed(2)),
+                sparkline: newSparkline,
+                asOf: new Date(),
+                isOpen: true,
+              });
             }
           }
         } catch (err) {}
@@ -430,7 +482,7 @@ export function startBackgroundTasks() {
 
   setInterval(async () => {
     try {
-      const allInstruments = await db.select().from(instruments).where(eq(instruments.isActive, true));
+      const allInstruments = await getCachedActiveInstruments();
     
       const activeInstruments = allInstruments.filter((i: any) => {
          if (i.assetClass === "CRYPTO") return isBinanceGeoBlocked;
@@ -713,28 +765,27 @@ export function startBackgroundTasks() {
           const changeAbs = parseFloat(priceData.changeAbs);
           const newSparkline = await updateCachedSparkline(instrument, currentPrice, changeAbs);
 
-          console.log(`Updated ${instrument.symbol} to $${priceData.price} [Open: ${isOpen}]`);
-          await db.update(latestPrices)
-            .set({
-              price: String(priceData.price),
-              changeAbs: String(priceData.changeAbs),
-              changePct: String(priceData.changePct),
-              sparkline: newSparkline,
-              asOf: new Date(),
-              isOpen: true
-            })
-            .where(eq(latestPrices.instrumentId, instrument.id));
+          if (bgTick % 60 === 0) {
+            console.log(`[MarketSync] Periodic sync: ${instrument.symbol} @ $${priceData.price}`);
+          }
+          queuePriceUpdate({
+            instrumentId: instrument.id,
+            price: String(priceData.price),
+            changeAbs: String(priceData.changeAbs),
+            changePct: String(priceData.changePct),
+            sparkline: newSparkline,
+            asOf: new Date(),
+            isOpen: true,
+          });
 
           broadcastPriceTick(instrument.symbol, currentPrice, changeAbs, parseFloat(priceData.changePct || "0"));
         } else {
             // Fallback safety
-            const isOpen = isGlobalMarketOpen(instrument.assetClass, instrument.symbol);
-            await db.update(latestPrices)
-              .set({
-                asOf: new Date(),
-                isOpen: true
-              })
-              .where(eq(latestPrices.instrumentId, instrument.id));
+            queuePriceUpdate({
+              instrumentId: instrument.id,
+              asOf: new Date(),
+              isOpen: true,
+            });
         }
 
       }
@@ -811,10 +862,8 @@ export function startBackgroundTasks() {
       if (!activeTrades || activeTrades.length === 0) return;
 
       const now = Date.now();
-      console.log(`[Engine] Found ${activeTrades.length} active trades.`);
       for (const trade of activeTrades) {
         const tradeExpires = new Date(trade.expiresAt).getTime();
-        console.log(`[Engine] Trade #${trade.id} expires at ${tradeExpires}, now is ${now}. Expired? ${now >= tradeExpires}`);
         if (now >= tradeExpires) {
           // Time expired, let's settle it!
           const [priceRow] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, trade.instrumentId));

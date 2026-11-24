@@ -49,6 +49,9 @@ router.get("/health", (_req: Request, res: Response) => {
 router.get("/ping", (_req: Request, res: Response) => res.send("pong"));
 
 // ── INSTRUMENTS CATALOG ─────────────────────────────────────
+const catalogCache = new Map<string, { data: any; timestamp: number }>();
+const CATALOG_CACHE_TTL = 15000; // 15s TTL
+
 router.get(api.instruments.list.path, async (req: Request, res: Response) => {
   try {
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
@@ -61,10 +64,24 @@ router.get(api.instruments.list.path, async (req: Request, res: Response) => {
     if (isNaN(offset) || offset < 0) {
       return res.status(400).json({ message: "Invalid offset parameter" });
     }
+
+    const cacheKey = JSON.stringify(req.query);
+    const cachedEntry = catalogCache.get(cacheKey);
+    if (cachedEntry && Date.now() - cachedEntry.timestamp < CATALOG_CACHE_TTL) {
+      return res.json(cachedEntry.data);
+    }
+
     let instruments = await storage.listInstruments(req.query);
     if (offset > 0 || limit !== undefined) {
       instruments = instruments.slice(offset, limit !== undefined ? offset + limit : undefined);
     }
+
+    catalogCache.set(cacheKey, { data: instruments, timestamp: Date.now() });
+    if (catalogCache.size > 50) {
+      const oldestKey = catalogCache.keys().next().value;
+      if (oldestKey) catalogCache.delete(oldestKey);
+    }
+
     res.json(instruments);
   } catch (error) {
     console.error('Error fetching instruments:', error);

@@ -18,8 +18,9 @@ if (isProduction) {
   clientInstance = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
-    max: 15,
-    idleTimeoutMillis: 30000,
+    max: 10,
+    idleTimeoutMillis: 20000,
+    connectionTimeoutMillis: 5000,
   });
   dbInstance = drizzleRemote(clientInstance, { schema });
 } else {

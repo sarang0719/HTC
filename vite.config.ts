@@ -19,6 +19,7 @@ export default defineConfig({
   ],
   envDir: "../",
   resolve: {
+    conditions: ["production", "import", "module", "browser", "default"],
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
       "@shared": path.resolve(import.meta.dirname, "shared"),
@@ -29,7 +30,30 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
-    chunkSizeWarningLimit: 2000,
+    chunkSizeWarningLimit: 1500,
+    target: "es2020",
+    cssCodeSplit: true,
+    minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks: (id) => {
+          if (id.includes("node_modules")) {
+            if (id.includes("react") || id.includes("wouter") || id.includes("scheduler")) {
+              return "vendor-react";
+            }
+            if (id.includes("lightweight-charts") || id.includes("recharts") || id.includes("d3-")) {
+              return "vendor-charts";
+            }
+            if (id.includes("@radix-ui") || id.includes("lucide-react") || id.includes("framer-motion")) {
+              return "vendor-ui";
+            }
+            if (id.includes("@tanstack")) {
+              return "vendor-query";
+            }
+          }
+        },
+      },
+    },
   },
   server: {
     fs: {
