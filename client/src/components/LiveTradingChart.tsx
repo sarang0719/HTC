@@ -337,7 +337,7 @@ function LiveTradingChartComponent({
       // Previous candle closes cleanly; new candle opens at previous close
       const open = (candle && candle.close > 0) ? candle.close : price;
       // Guard: initial tick cannot jump wildly from previous close
-      const maxJump = isCryptoAsset ? 0.015 : 0.004;
+      const maxJump = isCryptoAsset ? 0.012 : 0.0025;
       const safePrice = (open > 0 && Math.abs(price - open) / open > maxJump) ? open : price;
 
       candle = {
@@ -355,7 +355,7 @@ function LiveTradingChartComponent({
     } else {
       // Intra-candle update for current bucket
       // Guard against rogue spike ticks expanding intra-candle wicks abnormally
-      const maxIntraMove = isCryptoAsset ? 0.02 : 0.005; // 0.5% max single-bar excursion for metals ($18 on Gold)
+      const maxIntraMove = isCryptoAsset ? 0.015 : 0.004; // 0.4% max single-bar excursion for metals ($14 on Gold, $0.16 on Silver)
       if (candle.open > 0 && Math.abs(price - candle.open) / candle.open > maxIntraMove) {
         // Discard rogue tick excursion that creates needle wicks
         return;
@@ -395,7 +395,7 @@ function LiveTradingChartComponent({
     // Real ticks never jump > 0.4% in 1 tick for metals/forex, or > 1.0% for crypto
     if (prev > 0) {
       const devFromPrev = Math.abs(rawPrice - prev) / prev;
-      const maxTickDev = isCryptoAsset ? 0.01 : 0.004; // 0.4% for metals/forex ($14 on Gold), 1.0% for crypto
+      const maxTickDev = isCryptoAsset ? 0.01 : 0.0025; // 0.25% for metals/forex, 1.0% for crypto
       if (devFromPrev > maxTickDev) {
         // Drop rogue out-of-band spike tick to preserve clean candlestick geometry
         return;
@@ -623,7 +623,8 @@ function LiveTradingChartComponent({
       if (history.length === 0) {
         let fallbackBase = targetPriceRef.current > 0 ? targetPriceRef.current : 0;
         if (fallbackBase <= 0) {
-          if (symUpper.includes("XAU") || symUpper.includes("PAXG") || symUpper.includes("GOLD")) fallbackBase = 3580.0;
+          if (symUpper.includes("XAU") || symUpper.includes("PAXG") || symUpper.includes("GOLD")) fallbackBase = 3558.0;
+          else if (symUpper.includes("XAG") || symUpper.includes("SILVER")) fallbackBase = 40.80;
           else if (symUpper.includes("BTC")) fallbackBase = 66800.0;
           else if (symUpper.includes("ETH")) fallbackBase = 3400.0;
           else if (symUpper.includes("BNB")) fallbackBase = 740.0;
@@ -745,8 +746,9 @@ function LiveTradingChartComponent({
           // If historical feed ended before current minute bucket, seamlessly append open bar
           const open = lastBar.close;
           let livePrice = targetPriceRef.current > 0 ? targetPriceRef.current : open;
-          // Guard: If livePrice is wildly divergent from last closed bar (>2%), clamp to open to avoid initial bar spike
-          if (open > 0 && Math.abs(livePrice - open) / open > 0.02) {
+          // Seamless continuous flow — clamp initial livePrice to previous close if divergence exceeds 0.25% (0.0025)
+          const maxOpenBarDiv = isCryptoAsset ? 0.008 : 0.0025; // 0.25% on metals ($8 on Gold, $0.10 on Silver)
+          if (open > 0 && Math.abs(livePrice - open) / open > maxOpenBarDiv) {
             livePrice = open;
           }
           const openCandle: CandleOHLC = {

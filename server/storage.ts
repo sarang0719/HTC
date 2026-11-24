@@ -781,8 +781,9 @@ export class DatabaseStorage implements IStorage {
         // Institutional Base-price Mapping v4.0
         if (sym === "BTCUSD" || sym === "BTCUSDT") base = 69717.92;
         else if (sym === "ETHUSDT") base = 3755.20;
-        else if (sym === "XAUUSD") base = 4150.00;
-        else if (sym === "XAUTUSDC" || sym === "XAUTUSDT") base = 3998.00;
+        else if (sym === "XAUUSD" || sym === "GOLD" || sym === "PAXGUSDT") base = 3558.00;
+        else if (sym === "XAUTUSDC" || sym === "XAUTUSDT") base = 3558.00;
+        else if (sym === "XAGUSD" || sym === "SILVER") base = 40.80;
         else if (sym === "USDINR") base = 83.50;
         else if (sym === "USDPKR") base = 278.40;
         else if (sym === "USDJPY") base = 152.00;
@@ -846,6 +847,24 @@ export class DatabaseStorage implements IStorage {
         log(`Institutional Admin created: ${adminData.email} [Role: ${adminData.role}]`);
       }
     }
+
+    // Institutional Calibration: Reset any outlier prices in latestPrices on boot
+    try {
+      const allInst = await db.select().from(instruments);
+      for (const inst of allInst) {
+        if (["XAUUSD", "GOLD", "PAXGUSDT"].includes(inst.symbol)) {
+          const [p] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, inst.id));
+          if (p && parseFloat(p.price) > 3800) {
+            await db.update(latestPrices).set({ price: "3558.00" }).where(eq(latestPrices.instrumentId, inst.id));
+          }
+        } else if (["XAGUSD", "SILVER"].includes(inst.symbol)) {
+          const [p] = await db.select().from(latestPrices).where(eq(latestPrices.instrumentId, inst.id));
+          if (p && (parseFloat(p.price) > 42 || parseFloat(p.price) < 35)) {
+            await db.update(latestPrices).set({ price: "40.80" }).where(eq(latestPrices.instrumentId, inst.id));
+          }
+        }
+      }
+    } catch {}
   }
 
   async updateLatestPrice(instrumentId: number, price: string, changeAbs: string, changePct: string): Promise<void> {

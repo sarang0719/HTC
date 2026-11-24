@@ -156,6 +156,52 @@ router.get("/api/market-data/price/:symbol", async (req: Request, res: Response)
         }
       }
     } catch (err) { }
+
+    // Fallback for Spot Gold to Yahoo PAXG-USD if Binance is throttled
+    if (isGoldSymbol) {
+      try {
+        const yRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/PAXG-USD?interval=1m&range=1d", {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+          signal: AbortSignal.timeout(2500)
+        });
+        if (yRes.ok) {
+          const yData = await yRes.json() as any;
+          const meta = yData.chart?.result?.[0]?.meta;
+          if (meta && meta.regularMarketPrice && parseFloat(meta.regularMarketPrice) > 0) {
+            const currentPrice = parseFloat(meta.regularMarketPrice);
+            const prevClose = parseFloat(meta.chartPreviousClose || meta.previousClose || currentPrice);
+            const changeAbs = currentPrice - prevClose;
+            const changePct = prevClose > 0 ? (changeAbs / prevClose) * 100 : 0;
+
+            const now = Date.now();
+            metalPriceCache.set(symbol, { price: currentPrice, changeAbs, changePct, time: now });
+            livePriceCache.set(symbol, {
+              price: currentPrice,
+              changeAbs,
+              changePct,
+              asOf: new Date().toISOString(),
+              source: "Yahoo Spot Gold (PAXG-USD)",
+              timestamp: now
+            });
+
+            storage.getInstrumentBySymbol(symbol).then(async (inst) => {
+              if (inst && (inst as any).id) {
+                await storage.updateLatestPrice((inst as any).id, String(currentPrice), String(changeAbs), String(changePct));
+              }
+            }).catch(() => { });
+
+            return res.json({
+              symbol,
+              price: currentPrice,
+              changeAbs,
+              changePct,
+              asOf: new Date().toISOString(),
+              source: "Yahoo Spot Gold (PAXG-USD)"
+            });
+          }
+        }
+      } catch {}
+    }
   }
 
   // 3. Live Finnhub Quote check for Forex, Stocks, and Commodities
@@ -231,7 +277,7 @@ router.get("/api/market-data/price/:symbol", async (req: Request, res: Response)
     } catch (err) { }
   }
 
-  // 5. TwelveData Live Spot Price for Metals (XAGUSD / Silver)
+  // 5. Live Spot Price for Metals (XAGUSD / Silver via COMEX Silver SI=F)
   if (symbol === "XAGUSD" || symbol === "SILVER") {
     const now = Date.now();
     const cached = metalPriceCache.get(symbol);
@@ -242,68 +288,54 @@ router.get("/api/market-data/price/:symbol", async (req: Request, res: Response)
         changeAbs: cached.changeAbs ?? 0.01,
         changePct: cached.changePct ?? 0.01,
         asOf: new Date(cached.time).toISOString(),
-        source: "TwelveData Spot Price Cache"
+        source: "Yahoo Finance COMEX Silver (Cache)"
       });
     }
 
     try {
-      const TWELVEDATA_API_KEY = process.env.TWELVEDATA_API_KEY || "4a3bb708bb7247528d0efe958476bdaa";
-      const tdSym = "XAG/USD";
-      // Try /quote first for real changeAbs and changePct
-      let currentPrice = 0;
-      let changeAbs = 0.01;
-      let changePct = 0.01;
+      // Primary: COMEX Silver (SI=F) via Yahoo Finance (1:1 identical to chart candles)
+      const yRes = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/SI=F?interval=1m&range=1d", {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+        signal: AbortSignal.timeout(2500)
+      });
+      if (yRes.ok) {
+        const yData = await yRes.json() as any;
+        const meta = yData.chart?.result?.[0]?.meta;
+        if (meta && meta.regularMarketPrice && parseFloat(meta.regularMarketPrice) > 0) {
+          const currentPrice = parseFloat(meta.regularMarketPrice);
+          const prevClose = parseFloat(meta.chartPreviousClose || meta.previousClose || currentPrice);
+          const changeAbs = currentPrice - prevClose;
+          const changePct = prevClose > 0 ? (changeAbs / prevClose) * 100 : 0;
 
-      const tdQuoteRes = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(tdSym)}&apikey=${TWELVEDATA_API_KEY}`, { signal: AbortSignal.timeout(2500) });
-      if (tdQuoteRes.ok) {
-        const qData = await tdQuoteRes.json() as any;
-        const px = parseFloat(qData.close || qData.price);
-        if (!isNaN(px) && px > 0) {
-          currentPrice = px;
-          changeAbs = parseFloat(qData.change || "0");
-          changePct = parseFloat(qData.percent_change || "0");
+          metalPriceCache.set(symbol, { price: currentPrice, changeAbs, changePct, time: now });
+          livePriceCache.set(symbol, {
+            price: currentPrice,
+            changeAbs,
+            changePct,
+            asOf: new Date().toISOString(),
+            source: "Yahoo Finance COMEX Silver",
+            timestamp: now
+          });
+
+          storage.getInstrumentBySymbol(symbol).then(async (inst) => {
+            if (inst && (inst as any).id) {
+              await storage.updateLatestPrice((inst as any).id, String(currentPrice), String(changeAbs), String(changePct));
+            }
+          }).catch(() => { });
+
+          return res.json({
+            symbol,
+            price: currentPrice,
+            changeAbs,
+            changePct,
+            asOf: new Date().toISOString(),
+            source: "Yahoo Finance COMEX Silver"
+          });
         }
       }
+    } catch (err) {}
 
-      if (currentPrice <= 0) {
-        const tdRes = await fetch(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(tdSym)}&apikey=${TWELVEDATA_API_KEY}`, { signal: AbortSignal.timeout(2000) });
-        if (tdRes.ok) {
-          const tdData = await tdRes.json() as any;
-          if (tdData && tdData.price && !isNaN(parseFloat(tdData.price))) {
-            currentPrice = parseFloat(tdData.price);
-          }
-        }
-      }
-
-      if (currentPrice > 0) {
-        metalPriceCache.set(symbol, { price: currentPrice, changeAbs, changePct, time: now });
-        livePriceCache.set(symbol, {
-          price: currentPrice,
-          changeAbs,
-          changePct,
-          asOf: new Date().toISOString(),
-          source: "TwelveData Spot Price API",
-          timestamp: now
-        });
-
-        storage.getInstrumentBySymbol(symbol).then(async (inst) => {
-          if (inst && (inst as any).id) {
-            await storage.updateLatestPrice((inst as any).id, String(currentPrice), String(changeAbs), String(changePct));
-          }
-        }).catch(() => { });
-
-        return res.json({
-          symbol,
-          price: currentPrice,
-          changeAbs,
-          changePct,
-          asOf: new Date().toISOString(),
-          source: "TwelveData Spot Price API"
-        });
-      }
-    } catch (err) { }
-
-    // Fallback to storage price
+    // Fallback to storage price only if Yahoo was unreachable
     try {
       const inst = await storage.getInstrumentBySymbol(symbol);
       if (inst && inst.price && parseFloat(inst.price) > 0) {
@@ -315,7 +347,7 @@ router.get("/api/market-data/price/:symbol", async (req: Request, res: Response)
           changeAbs: parseFloat(inst.changeAbs || "0.01"),
           changePct: parseFloat(inst.changePct || "0.01"),
           asOf: new Date().toISOString(),
-          source: "TwelveData Live Spot Stream"
+          source: "Storage Cache (Silver)"
         });
       }
     } catch {}
@@ -327,7 +359,7 @@ router.get("/api/market-data/price/:symbol", async (req: Request, res: Response)
         changeAbs: 0.01,
         changePct: 0.01,
         asOf: new Date(cached.time).toISOString(),
-        source: "TwelveData Spot Price Cache (Fallback)"
+        source: "Silver Spot Price Cache (Fallback)"
       });
     }
   }
