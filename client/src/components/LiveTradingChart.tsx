@@ -312,7 +312,7 @@ function LiveTradingChartComponent({
       }
 
       const isBuy = level.side === "BUY" || level.title?.toUpperCase().includes("BUY") || level.color === "#10b981";
-      const curPrice = level.currentPrice || livePrice || level.price;
+      const curPrice = level.currentPrice || displayPrice || level.price;
       const amt = level.amount || 5;
       const payout = level.payoutRatio || 0.85;
       const isWinning = isBuy ? (curPrice >= level.price) : (curPrice <= level.price);
@@ -420,7 +420,7 @@ function LiveTradingChartComponent({
         }
       }
     });
-  }, [priceLevels, chartReady, nowMs, livePrice]);
+  }, [priceLevels, chartReady, nowMs, displayPrice]);
 
   // ── Core: update active candle on each tick ───────────────────────────────
   // Stored in a ref (not useCallback) so it never changes identity → won't trigger effect re-run
@@ -1155,7 +1155,7 @@ function LiveTradingChartComponent({
           const s = remSec % 60;
           const timeStr = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
           const isBuy = level.side === "BUY" || level.title?.toUpperCase().includes("BUY") || level.color === "#10b981";
-          const curPrice = level.currentPrice || livePrice || level.price;
+          const curPrice = level.currentPrice || displayPrice || level.price;
           const amt = level.amount || 5;
           const payout = level.payoutRatio || 0.85;
           const isWinning = isBuy ? (curPrice >= level.price) : (curPrice <= level.price);
