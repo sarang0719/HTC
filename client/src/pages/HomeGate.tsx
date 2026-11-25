@@ -9,7 +9,7 @@ export default function HomeGate() {
   const [, setLoc] = useLocation();
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) setLoc("/app");
+    if (!isLoading && isAuthenticated) setLoc("/markets/BTCUSD");
   }, [isLoading, isAuthenticated, setLoc]);
 
   if (isLoading) {

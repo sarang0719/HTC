@@ -82,10 +82,10 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
   const nav: NavItem[] = useMemo(
     () => {
       const allNav = [
-        { href: "/app", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" />, testId: "nav-dashboard" },
+        { href: "/markets/BTCUSD", label: "Trade", icon: <CandlestickChart className="h-4 w-4" />, testId: "nav-trade" },
+        { href: "/app/markets", label: "Markets", icon: <LayoutDashboard className="h-4 w-4" />, testId: "nav-markets" },
         { href: "/app/portfolio", label: "Portfolio", icon: <Briefcase className="h-4 w-4" />, testId: "nav-portfolio" },
         { href: "/app/watchlists", label: "Watchlists", icon: <Activity className="h-4 w-4" />, testId: "nav-watchlists" },
-        { href: "/app/markets", label: "Markets", icon: <CandlestickChart className="h-4 w-4" />, testId: "nav-markets" },
         { href: "/app/orders", label: "Orders", icon: <ListChecks className="h-4 w-4" />, testId: "nav-orders" },
         { href: "/app/learn", label: "Learn", icon: <BookOpen className="h-4 w-4" />, testId: "nav-learn" },
       ];

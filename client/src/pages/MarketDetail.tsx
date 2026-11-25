@@ -14,7 +14,8 @@ import {
   MousePointer2, Crosshair, Minus, Pencil, Type, Square,
   Bell, Clock, PlusCircle, MinusCircle, CheckCircle,
   XCircle, BrainCircuit, Zap, TrendingDown, ChevronRight,
-  Lock, RefreshCw, Maximize, Sparkles, Landmark, Volume2, VolumeX
+  Lock, RefreshCw, Maximize, Sparkles, Landmark, Volume2, VolumeX,
+  X, ArrowLeftRight
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent,
@@ -115,7 +116,7 @@ export default function MarketDetail() {
   const [chartType, setChartType] = useState<
     "bar" | "candle" | "hollow" | "line" | "stepline" | "area" | "baseline" | "columns" | "heikin"
   >("candle");
-  const [chartEngine, setChartEngine] = useState<"quotex" | "tradingview">("quotex");
+  const [chartEngine, setChartEngine] = useState<"quotex" | "tradingview">("tradingview");
   const [activeIndicators, setActiveIndicators] = useState<string[]>([]);
   const [activeTool, setActiveTool] = useState<string>("cursor");
   const [flashColor, setFlashColor] = useState<string | null>(null);
@@ -1702,34 +1703,12 @@ export default function MarketDetail() {
                 <History className="w-3.5 h-3.5" /> Replay
               </div>
 
-              {/* Chart Mode Switcher: Quotex Fast vs TradingView Pro */}
-              <div className="flex items-center gap-1 bg-background/80 p-0.5 rounded-lg border border-border/40 ml-2">
-                <button
-                  type="button"
-                  onClick={() => setChartEngine("quotex")}
-                  className={cn(
-                    "px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase transition-all",
-                    chartEngine === "quotex"
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                  title="Quotex-style fast live trading chart"
-                >
-                  Quotex Fast
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChartEngine("tradingview")}
-                  className={cn(
-                    "px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase transition-all",
-                    chartEngine === "tradingview"
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                  title="Official TradingView chart widget with institutional OANDA Gold feed"
-                >
+              {/* TradingView Pro Engine Badge */}
+              <div className="flex items-center gap-1.5 bg-blue-500/10 border border-blue-500/30 px-2.5 py-1 rounded-lg ml-2 shadow-sm">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                <span className="text-[10px] font-black tracking-wider uppercase text-blue-400">
                   TradingView Pro
-                </button>
+                </span>
               </div>
             </div>
 
@@ -1839,10 +1818,10 @@ export default function MarketDetail() {
               </div>
             )}
 
-            {/* ── Admin TradingView Pro Active Trades & TP/SL Overlay ── */}
+            {/* ── Admin TradingView Pro Active Trades & TP/SL Overlay (Authentic Paper Trading UI) ── */}
             {chartEngine === "tradingview" && isAdmin && activeTrades.length > 0 && (
-              <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
-                {activeTrades.map(trade => {
+              <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden select-none">
+                {activeTrades.map((trade, idx) => {
                   const strike = parseFloat(trade.strikePrice as string);
                   const amount = parseFloat(trade.amount as string || "5");
                   const payout = parseFloat((trade as any).payoutRatio || "0.85");
@@ -1861,62 +1840,121 @@ export default function MarketDetail() {
                   const s = remSec % 60;
                   const timeStr = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 
+                  const fmtPrice = (val: number) => {
+                    if (isNaN(val)) return "0.00";
+                    if (val >= 1000) return val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    if (val >= 1) return val.toFixed(2);
+                    return val.toFixed(4);
+                  };
+
+                  // Stagger positions if multiple trades are active
+                  const topTp = isBuy ? `${33 + idx * 4}%` : `${67 - idx * 4}%`;
+                  const topEntry = `${50 + (idx === 0 ? 0 : (idx % 2 === 1 ? -6 : 6))}%`;
+                  const topSl = isBuy ? `${67 - idx * 4}%` : `${33 + idx * 4}%`;
+
                   return (
-                    <div key={trade.id} className="w-full h-full relative">
-                      {/* SL Line */}
-                      <div className="absolute left-0 right-0 top-[28%] border-b border-dashed border-rose-500/80 flex items-center justify-between px-4">
-                        <span className="text-[10px] font-mono font-bold text-rose-400 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-500/40 backdrop-blur-sm">
-                          🛑 STOP LOSS [ -${slLoss.toFixed(2)} USD ]
-                        </span>
-                        <span className="text-[10px] font-mono font-bold text-white bg-rose-600 px-2 py-0.5 rounded shadow">
-                          ${slPrice.toFixed(2)}
-                        </span>
-                      </div>
+                    <div key={trade.id} className="w-full h-full absolute inset-0">
+                      {/* Take Profit (TP) Line */}
+                      <div
+                        className="absolute left-0 right-0 flex items-center"
+                        style={{ top: topTp }}
+                      >
+                        {/* Horizontal dashed line */}
+                        <div className="absolute left-0 right-0 border-b border-dashed border-[#089981]/90" />
 
-                      {/* Entry Line */}
-                      <div className={cn(
-                        "absolute left-0 right-0 top-[48%] border-b-2 flex items-center justify-between px-4 transition-colors",
-                        isBuy ? "border-emerald-500/90" : "border-rose-500/90"
-                      )}>
-                        <div className="flex items-center gap-2">
-                          <span className={cn(
-                            "text-[11px] font-mono font-black px-2 py-0.5 rounded text-white shadow-lg",
-                            isBuy ? "bg-emerald-600" : "bg-rose-600"
-                          )}>
-                            {isBuy ? "+1 BUY" : "-1 SELL"} ${amount.toFixed(2)}
-                          </span>
-                          <span className="text-[10px] font-mono text-muted-foreground bg-background/90 px-1.5 py-0.5 rounded border border-border/40">
-                            Entry: ${strike.toFixed(2)}
-                          </span>
-                          <span className={cn(
-                            "text-[11px] font-mono font-black px-2 py-0.5 rounded text-white shadow-lg flex items-center gap-1",
-                            isWinning ? "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)]" : "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.5)]"
-                          )}>
-                            P&L: {livePnL >= 0 ? "+" : ""}${livePnL.toFixed(2)} USD
-                          </span>
+                        {/* Connected Pill on Line (Positioned right before price axis) */}
+                        <div className="absolute right-[82px] -translate-y-1/2 flex items-center z-10 shadow-sm">
+                          <div className="bg-[#0b1f28]/95 text-[#089981] border border-[#089981] px-1.5 h-5 flex items-center rounded-l text-[10px] font-mono font-bold tracking-tight">
+                            <span>1</span>
+                          </div>
+                          <div className="bg-[#089981] text-white border-y border-r border-[#089981] px-2 h-5 flex items-center rounded-r text-[10px] font-mono font-bold tracking-tight">
+                            <span>+{tpProfit.toFixed(2)} USD</span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-mono font-black text-amber-300 bg-black/90 px-2 py-0.5 rounded border border-amber-500/40 flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
-                            {timeStr}
-                          </span>
-                          <span className={cn(
-                            "text-[10px] font-mono font-black px-2 py-0.5 rounded text-white shadow",
-                            isBuy ? "bg-emerald-600" : "bg-rose-600"
-                          )}>
-                            ${strike.toFixed(2)}
+
+                        {/* Right Price Scale Badge */}
+                        <div className="absolute right-0 -translate-y-1/2 z-20">
+                          <span className="bg-[#089981] text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-l shadow-sm tracking-tight inline-block">
+                            {fmtPrice(tpPrice)}
                           </span>
                         </div>
                       </div>
 
-                      {/* TP Line */}
-                      <div className="absolute left-0 right-0 top-[68%] border-b border-dashed border-emerald-500/80 flex items-center justify-between px-4">
-                        <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40 backdrop-blur-sm">
-                          🎯 TAKE PROFIT [ +${tpProfit.toFixed(2)} USD ]
-                        </span>
-                        <span className="text-[10px] font-mono font-bold text-white bg-emerald-600 px-2 py-0.5 rounded shadow">
-                          ${tpPrice.toFixed(2)}
-                        </span>
+                      {/* Entry / Position Line */}
+                      <div
+                        className="absolute left-0 right-0 flex items-center"
+                        style={{ top: topEntry }}
+                      >
+                        {/* Horizontal solid line */}
+                        <div className="absolute left-0 right-0 border-b border-[#2962ff]/90" />
+
+                        {/* Connected Pill on Line (Positioned right before price axis) */}
+                        <div className="absolute right-[82px] -translate-y-1/2 flex items-center z-10 shadow-sm">
+                          {/* Close Position Early Button (Interactive) */}
+                          <button
+                            type="button"
+                            onClick={() => handleSellEarly(trade.id)}
+                            className="pointer-events-auto w-5 h-5 rounded-full bg-[#2962ff] hover:bg-rose-600 text-white flex items-center justify-center transition-colors shadow mr-1 cursor-pointer"
+                            title="Close Position Early"
+                          >
+                            <X className="w-3 h-3 stroke-[2.5]" />
+                          </button>
+
+                          {/* Reverse / Units segment */}
+                          <div className="bg-[#131d31]/95 text-[#2962ff] border border-[#2962ff] px-1.5 h-5 flex items-center gap-1 rounded-l text-[10px] font-mono font-bold tracking-tight">
+                            <ArrowLeftRight className="w-2.5 h-2.5" />
+                            <span>{trade.amount ? `$${Number(trade.amount).toFixed(0)}` : "1"}</span>
+                          </div>
+
+                          {/* Unrealized P&L Badge */}
+                          <div className={cn(
+                            "px-2 h-5 flex items-center rounded-r text-[10px] font-mono font-bold tracking-tight border-y border-r transition-colors",
+                            isWinning
+                              ? "bg-[#089981] text-white border-[#089981]"
+                              : "bg-[#f23645] text-white border-[#f23645]"
+                          )}>
+                            <span>{livePnL >= 0 ? "+" : ""}{livePnL.toFixed(2)} USD</span>
+                          </div>
+
+                          {/* Timer Pill */}
+                          <div className="ml-1.5 flex items-center gap-1 bg-[#0f172a]/95 text-amber-300 border border-amber-500/30 px-1.5 h-5 rounded text-[10px] font-mono font-bold backdrop-blur-sm">
+                            <Clock className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                            <span>{timeStr}</span>
+                          </div>
+                        </div>
+
+                        {/* Right Price Scale Badge */}
+                        <div className="absolute right-0 -translate-y-1/2 z-20">
+                          <span className="bg-[#2962ff] text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-l shadow-sm tracking-tight inline-block">
+                            {fmtPrice(strike)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Stop Loss (SL) Line */}
+                      <div
+                        className="absolute left-0 right-0 flex items-center"
+                        style={{ top: topSl }}
+                      >
+                        {/* Horizontal dashed line */}
+                        <div className="absolute left-0 right-0 border-b border-dashed border-[#f23645]/90" />
+
+                        {/* Connected Pill on Line (Positioned right before price axis) */}
+                        <div className="absolute right-[82px] -translate-y-1/2 flex items-center z-10 shadow-sm">
+                          <div className="bg-[#281318]/95 text-[#f23645] border border-[#f23645] px-1.5 h-5 flex items-center rounded-l text-[10px] font-mono font-bold tracking-tight">
+                            <span>SL</span>
+                          </div>
+                          <div className="bg-[#f23645] text-white border-y border-r border-[#f23645] px-2 h-5 flex items-center rounded-r text-[10px] font-mono font-bold tracking-tight">
+                            <span>-{slLoss.toFixed(2)} USD</span>
+                          </div>
+                        </div>
+
+                        {/* Right Price Scale Badge */}
+                        <div className="absolute right-0 -translate-y-1/2 z-20">
+                          <span className="bg-[#f23645] text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded-l shadow-sm tracking-tight inline-block">
+                            {fmtPrice(slPrice)}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   );

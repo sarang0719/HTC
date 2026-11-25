@@ -11,12 +11,15 @@ export default function AppIndex() {
   const [, setLoc] = useLocation();
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      redirectToLogin(toast as any);
-      setLoc("/");
+    if (!isLoading) {
+      if (!isAuthenticated) {
+        redirectToLogin(toast as any);
+        setLoc("/");
+      } else {
+        setLoc("/markets/BTCUSD");
+      }
     }
   }, [isLoading, isAuthenticated, toast, setLoc]);
 
-  if (!isAuthenticated) return null;
-  return <Dashboard />;
+  return null;
 }
