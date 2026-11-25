@@ -29,10 +29,11 @@ export default function AIInsights() {
   const [, setLoc] = useLocation();
 
   // Redirect non-admins
-  const isMaster = currentUser?.email === "saran123@gmail.com";
-  const isOperator = currentUser?.email === "htctrade123@gmail.com";
+  const isAdmin = ["saran123@gmail.com", "htctrade123@gmail.com"].includes((currentUser?.email || "").toLowerCase()) ||
+                  currentUser?.role === "ADMIN_1" ||
+                  currentUser?.role === "ADMIN_2";
 
-  if (currentUser && !isMaster && !isOperator) {
+  if (currentUser && !isAdmin) {
      setLoc("/app");
      return null;
   }

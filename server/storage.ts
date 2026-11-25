@@ -827,17 +827,18 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Finalize: Auto-create institutional Admin Accounts v2.0
+    // Finalize: Auto-create / update institutional Admin Accounts v2.0
     const admins = [
       { email: "saran123@gmail.com", pass: "saran", firstName: "Admin-1", role: "ADMIN_1" },
-      { email: "htctrade123@gmail.com", pass: "htc123", firstName: "Admin-2", role: "ADMIN_2" }
+      { email: "htctrade123@gmail.com", pass: "HTC123", firstName: "Admin-2", role: "ADMIN_1" }
     ];
 
     for (const adminData of admins) {
       const existingUser = await db.select().from(users).where(eq(users.email, adminData.email));
+      const { hashPassword } = await import("./auth");
+      const hashed = await hashPassword(adminData.pass);
+
       if (existingUser.length === 0) {
-        const { hashPassword } = await import("./auth");
-        const hashed = await hashPassword(adminData.pass);
         const [inserted] = await db.insert(users).values({
           email: adminData.email,
           password: hashed,
@@ -853,6 +854,12 @@ export class DatabaseStorage implements IStorage {
         } as any);
         
         log(`Institutional Admin created: ${adminData.email} [Role: ${adminData.role}]`);
+      } else {
+        await db.update(users).set({
+          password: hashed,
+          role: adminData.role,
+        } as any).where(eq(users.email, adminData.email));
+        log(`Institutional Admin updated: ${adminData.email} [Role: ${adminData.role}]`);
       }
     }
 

@@ -50,21 +50,15 @@ export default function AdminDashboard() {
   const [activeAdminTab, setActiveAdminTab] = useState<"users" | "withdrawals">("users");
   const [withdrawNotes, setWithdrawNotes] = useState("");
 
-  // Redirect non-admins (Institutional Gatekeeper)
-  const isMaster = currentUser?.email === "saran123@gmail.com";
-  const isOperator = currentUser?.email === "htctrade123@gmail.com";
+  // Institutional Gatekeeper - Full Master Admin access for saran123 and htctrade123
+  const isMaster = ["saran123@gmail.com", "htctrade123@gmail.com"].includes((currentUser?.email || "").toLowerCase()) ||
+                   currentUser?.role === "ADMIN_1" ||
+                   currentUser?.role === "ADMIN_2";
 
-  if (currentUser && !isMaster && !isOperator) {
+  if (currentUser && !isMaster) {
      setLocation("/app");
      return null;
   }
-
-  // Force Admin 2 to withdrawals tab as they can't see users
-  useMemo(() => {
-    if (isOperator && activeAdminTab === "users") {
-      setActiveAdminTab("withdrawals");
-    }
-  }, [isOperator]);
 
   const { data: users, isLoading } = useQuery<any[]>({
     queryKey: ["/api/admin/users"],
@@ -140,16 +134,14 @@ export default function AdminDashboard() {
           </div>
           
           <div className="flex bg-card/60 p-1 rounded-xl border border-border/40 gap-1 w-full md:w-fit self-end">
-             {isMaster && (
-               <Button 
-                 variant={activeAdminTab === "users" ? "default" : "ghost"} 
-                 size="sm" 
-                 className="rounded-lg px-6"
-                 onClick={() => setActiveAdminTab("users")}
-               >
-                 <Users className="h-4 w-4 mr-2" /> Traders
-               </Button>
-             )}
+             <Button 
+               variant={activeAdminTab === "users" ? "default" : "ghost"} 
+               size="sm" 
+               className="rounded-lg px-6"
+               onClick={() => setActiveAdminTab("users")}
+             >
+               <Users className="h-4 w-4 mr-2" /> Traders
+             </Button>
              <Button 
                variant={activeAdminTab === "withdrawals" ? "default" : "ghost"} 
                size="sm" 
