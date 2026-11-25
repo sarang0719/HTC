@@ -42,12 +42,20 @@ interface CandleOHLC {
 }
 
 export interface PriceLevel {
-  id: number;
+  id: number | string;
   price: number;
   color: string;    // e.g. "#10b981" for BUY, "#f43f5e" for SELL
   title: string;    // e.g. "BUY" | "SELL"
+  side?: "BUY" | "SELL";
   expiresAt?: number;
   amount?: number;
+  payoutRatio?: number;
+  tpPrice?: number;
+  slPrice?: number;
+  tpAmount?: number;
+  slAmount?: number;
+  currentPrice?: number;
+  isAdmin?: boolean;
 }
 
 interface LiveTradingChartProps {
@@ -177,7 +185,7 @@ function LiveTradingChartComponent({
   ) && !["XAUUSD", "GOLD", "XAGUSD", "SILVER", "WTIUSD", "BRENTUSD"].includes(symUpper);
 
   // Track drawn price lines so we can remove old ones
-  const drawnLinesRef = useRef<Map<number, any>>(new Map());
+  const drawnLinesRef = useRef<Map<string | number, any>>(new Map());
 
   // ── Chart refs (no React state — updated via direct API for performance) ──
   const chartRef    = useRef<IChartApi | null>(null);
@@ -281,13 +289,15 @@ function LiveTradingChartComponent({
     const series = candleRef.current;
     if (!series) return;
 
-    const currentIds = new Set(priceLevels.map(l => l.id));
+    const currentTradeIds = new Set(priceLevels.map(l => String(l.id)));
 
     // Remove lines for trades that no longer exist
-    drawnLinesRef.current.forEach((line, id) => {
-      if (!currentIds.has(id)) {
+    drawnLinesRef.current.forEach((line, key) => {
+      const keyStr = String(key);
+      const tradeId = keyStr.split("_")[0];
+      if (!currentTradeIds.has(tradeId) && !currentTradeIds.has(keyStr)) {
         try { series.removePriceLine(line); } catch {}
-        drawnLinesRef.current.delete(id);
+        drawnLinesRef.current.delete(key);
       }
     });
 
@@ -298,30 +308,119 @@ function LiveTradingChartComponent({
         const remSec = Math.max(0, Math.ceil((level.expiresAt - nowMs) / 1000));
         const m = Math.floor(remSec / 60);
         const s = remSec % 60;
-        timeStr = ` ⏱ ${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        timeStr = `⏱ ${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
       }
-      const fullTitle = `${level.title}${level.amount ? ` ($${level.amount})` : ""}${timeStr}`;
 
-      if (!drawnLinesRef.current.has(level.id)) {
-        try {
-          const line = series.createPriceLine({
-            price: level.price,
-            color: level.color,
-            lineWidth: 2,
-            lineStyle: 1, // dashed
-            axisLabelVisible: true,
-            title: fullTitle,
-          });
-          drawnLinesRef.current.set(level.id, line);
-        } catch {}
+      const isBuy = level.side === "BUY" || level.title?.toUpperCase().includes("BUY") || level.color === "#10b981";
+      const curPrice = level.currentPrice || livePrice || level.price;
+      const amt = level.amount || 5;
+      const payout = level.payoutRatio || 0.85;
+      const isWinning = isBuy ? (curPrice >= level.price) : (curPrice <= level.price);
+      const livePnL = isWinning ? (amt * payout) : (-amt);
+
+      if (level.isAdmin) {
+        // TradingView-style TP, SL, Entry and Live P&L lines
+        const delta = Math.max(0.0001, level.price * 0.0015);
+        const tpPrice = level.tpPrice || (isBuy ? level.price + delta : level.price - delta);
+        const slPrice = level.slPrice || (isBuy ? level.price - delta : level.price + delta);
+        const tpAmount = level.tpAmount || (amt * payout);
+        const slAmount = level.slAmount || amt;
+
+        // 1. Entry Line (Solid, clear)
+        const entryKey = `${level.id}_entry`;
+        const entryTitle = `[ ${isBuy ? '+1 BUY' : '-1 SELL'} $${amt.toFixed(2)} ] [ P&L: ${livePnL >= 0 ? '+' : ''}$${livePnL.toFixed(2)} USD ] ${timeStr}`;
+        if (!drawnLinesRef.current.has(entryKey)) {
+          try {
+            const line = series.createPriceLine({
+              price: level.price,
+              color: isBuy ? "#10b981" : "#f43f5e",
+              lineWidth: 2,
+              lineStyle: 0, // Solid
+              axisLabelVisible: true,
+              title: entryTitle,
+            });
+            drawnLinesRef.current.set(entryKey, line);
+          } catch {}
+        } else {
+          try {
+            drawnLinesRef.current.get(entryKey)?.applyOptions({
+              price: level.price,
+              color: isBuy ? "#10b981" : "#f43f5e",
+              title: entryTitle,
+            });
+          } catch {}
+        }
+
+        // 2. Take Profit (TP) Line (Green dashed)
+        const tpKey = `${level.id}_tp`;
+        const tpTitle = `[ 🎯 TP ] [ +$${tpAmount.toFixed(2)} USD ] $${tpPrice.toFixed(2)}`;
+        if (!drawnLinesRef.current.has(tpKey)) {
+          try {
+            const line = series.createPriceLine({
+              price: tpPrice,
+              color: "#10b981",
+              lineWidth: 1,
+              lineStyle: 1, // Dashed
+              axisLabelVisible: true,
+              title: tpTitle,
+            });
+            drawnLinesRef.current.set(tpKey, line);
+          } catch {}
+        } else {
+          try {
+            drawnLinesRef.current.get(tpKey)?.applyOptions({
+              price: tpPrice,
+              title: tpTitle,
+            });
+          } catch {}
+        }
+
+        // 3. Stop Loss (SL) Line (Red dashed)
+        const slKey = `${level.id}_sl`;
+        const slTitle = `[ 🛑 SL ] [ -$${slAmount.toFixed(2)} USD ] $${slPrice.toFixed(2)}`;
+        if (!drawnLinesRef.current.has(slKey)) {
+          try {
+            const line = series.createPriceLine({
+              price: slPrice,
+              color: "#ef4444",
+              lineWidth: 1,
+              lineStyle: 1, // Dashed
+              axisLabelVisible: true,
+              title: slTitle,
+            });
+            drawnLinesRef.current.set(slKey, line);
+          } catch {}
+        } else {
+          try {
+            drawnLinesRef.current.get(slKey)?.applyOptions({
+              price: slPrice,
+              title: slTitle,
+            });
+          } catch {}
+        }
       } else {
-        try {
-          const line = drawnLinesRef.current.get(level.id);
-          line?.applyOptions({ title: fullTitle });
-        } catch {}
+        // Standard user line
+        const fullTitle = `${level.title}${level.amount ? ` ($${level.amount})` : ""}${timeStr ? ` ${timeStr}` : ""}`;
+        if (!drawnLinesRef.current.has(level.id)) {
+          try {
+            const line = series.createPriceLine({
+              price: level.price,
+              color: level.color,
+              lineWidth: 2,
+              lineStyle: 1,
+              axisLabelVisible: true,
+              title: fullTitle,
+            });
+            drawnLinesRef.current.set(level.id, line);
+          } catch {}
+        } else {
+          try {
+            drawnLinesRef.current.get(level.id)?.applyOptions({ title: fullTitle });
+          } catch {}
+        }
       }
     });
-  }, [priceLevels, chartReady, nowMs]);
+  }, [priceLevels, chartReady, nowMs, livePrice]);
 
   // ── Core: update active candle on each tick ───────────────────────────────
   // Stored in a ref (not useCallback) so it never changes identity → won't trigger effect re-run
@@ -1047,15 +1146,72 @@ function LiveTradingChartComponent({
         }}
       />
 
-      {/* ── Active Trades Order & Countdown Overlay (attached to right axis like reference picture) ── */}
-      <div className="absolute right-14 top-[25%] z-[35] flex flex-col items-end gap-3 pointer-events-none">
+      {/* ── Active Trades Order & Countdown Overlay (TradingView Pro / Quotex Fast Style) ── */}
+      <div className="absolute right-14 top-[20%] z-[35] flex flex-col items-end gap-3 pointer-events-none">
         {priceLevels.map(level => {
           if (!level.expiresAt || level.expiresAt <= nowMs) return null;
           const remSec = Math.max(0, Math.ceil((level.expiresAt - nowMs) / 1000));
           const m = Math.floor(remSec / 60);
           const s = remSec % 60;
           const timeStr = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-          const isBuy = level.color === "#10b981";
+          const isBuy = level.side === "BUY" || level.title?.toUpperCase().includes("BUY") || level.color === "#10b981";
+          const curPrice = level.currentPrice || livePrice || level.price;
+          const amt = level.amount || 5;
+          const payout = level.payoutRatio || 0.85;
+          const isWinning = isBuy ? (curPrice >= level.price) : (curPrice <= level.price);
+          const livePnL = isWinning ? (amt * payout) : (-amt);
+
+          const delta = Math.max(0.0001, level.price * 0.0015);
+          const tpPrice = level.tpPrice || (isBuy ? level.price + delta : level.price - delta);
+          const slPrice = level.slPrice || (isBuy ? level.price - delta : level.price + delta);
+
+          if (level.isAdmin) {
+            return (
+              <div key={level.id} className="flex flex-col items-end gap-1.5 animate-in fade-in zoom-in-95 duration-200">
+                {/* 1. Stop Loss Pill (Top) */}
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e222d]/95 backdrop-blur-md border border-rose-500/70 shadow-[0_2px_10px_rgba(239,68,68,0.25)] text-xs font-mono font-bold">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-400 font-black">SL</span>
+                  <span className="text-rose-400">-${amt.toFixed(2)} USD</span>
+                  <span className="text-muted-foreground/70 text-[10px]">(${slPrice.toFixed(2)})</span>
+                </div>
+
+                {/* 2. Main Entry Position & Live P&L Pill (Center) */}
+                <div className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded shadow-2xl border font-mono font-bold text-xs transition-all",
+                  isWinning 
+                    ? "bg-[#0b1b17]/95 border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.35)]" 
+                    : "bg-[#1f1013]/95 border-rose-500/80 shadow-[0_0_20px_rgba(244,63,94,0.35)]"
+                )}>
+                  <span className={cn(
+                    "px-1.5 py-0.5 rounded text-[10px] font-black uppercase text-white tracking-wider",
+                    isBuy ? "bg-emerald-600" : "bg-rose-600"
+                  )}>
+                    {isBuy ? "+1 BUY" : "-1 SELL"} ${amt}
+                  </span>
+                  <span className="text-muted-foreground text-[11px] font-medium">@ ${level.price.toFixed(2)}</span>
+                  <span className={cn(
+                    "px-2 py-0.5 rounded text-xs font-black flex items-center gap-1 shadow-inner",
+                    isWinning ? "bg-emerald-500 text-white" : "bg-rose-500 text-white"
+                  )}>
+                    {livePnL >= 0 ? "+" : ""}${livePnL.toFixed(2)} USD
+                  </span>
+                  <span className="flex items-center gap-1 text-[11px] text-amber-300 font-black bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                    <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
+                    {timeStr}
+                  </span>
+                </div>
+
+                {/* 3. Take Profit Pill (Bottom) */}
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1e222d]/95 backdrop-blur-md border border-emerald-500/70 shadow-[0_2px_10px_rgba(16,185,129,0.25)] text-xs font-mono font-bold">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-black">TP</span>
+                  <span className="text-emerald-400">+${(amt * payout).toFixed(2)} USD</span>
+                  <span className="text-muted-foreground/70 text-[10px]">(${tpPrice.toFixed(2)})</span>
+                </div>
+              </div>
+            );
+          }
+
+          // Standard non-admin view
           return (
             <div key={level.id} className="flex flex-col items-end animate-in fade-in zoom-in-95 duration-200">
               <div className={cn(

@@ -1811,16 +1811,116 @@ export default function MarketDetail() {
                       runPredictorRef.current?.(candles, false);
                     }
                   }}
-                  priceLevels={activeTrades.map((t): PriceLevel => ({
-                    id: t.id,
-                    price: parseFloat(t.strikePrice as string),
-                    color: t.side === "BUY" ? "#10b981" : "#f43f5e",
-                    title: t.side as string,
-                    expiresAt: new Date(t.expiresAt).getTime(),
-                    amount: parseFloat(t.amount as string || "5"),
-                  }))}
+                  priceLevels={activeTrades.map((t): PriceLevel => {
+                    const strike = parseFloat(t.strikePrice as string);
+                    const amount = parseFloat(t.amount as string || "5");
+                    const payout = parseFloat((t as any).payoutRatio || "0.85");
+                    const delta = Math.max(0.0001, strike * 0.0015);
+                    const isBuy = t.side === "BUY";
+                    return {
+                      id: t.id,
+                      price: strike,
+                      color: isBuy ? "#10b981" : "#f43f5e",
+                      title: t.side as string,
+                      side: t.side as any,
+                      expiresAt: new Date(t.expiresAt).getTime(),
+                      amount,
+                      payoutRatio: payout,
+                      tpPrice: isBuy ? strike + delta : strike - delta,
+                      slPrice: isBuy ? strike - delta : strike + delta,
+                      tpAmount: amount * payout,
+                      slAmount: amount,
+                      currentPrice: displayPrice,
+                      isAdmin,
+                    };
+                  })}
                   activeIndicators={activeIndicators}
                 />
+              </div>
+            )}
+
+            {/* ── Admin TradingView Pro Active Trades & TP/SL Overlay ── */}
+            {chartEngine === "tradingview" && isAdmin && activeTrades.length > 0 && (
+              <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
+                {activeTrades.map(trade => {
+                  const strike = parseFloat(trade.strikePrice as string);
+                  const amount = parseFloat(trade.amount as string || "5");
+                  const payout = parseFloat((trade as any).payoutRatio || "0.85");
+                  const isBuy = trade.side === "BUY";
+                  const delta = Math.max(0.0001, strike * 0.0015);
+                  const tpPrice = isBuy ? strike + delta : strike - delta;
+                  const slPrice = isBuy ? strike - delta : strike + delta;
+                  const tpProfit = amount * payout;
+                  const slLoss = amount;
+                  const isWinning = isBuy ? (displayPrice >= strike) : (displayPrice <= strike);
+                  const livePnL = isWinning ? tpProfit : -slLoss;
+
+                  const expiresAtMs = new Date(trade.expiresAt).getTime();
+                  const remSec = Math.max(0, Math.ceil((expiresAtMs - Date.now()) / 1000));
+                  const m = Math.floor(remSec / 60);
+                  const s = remSec % 60;
+                  const timeStr = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+
+                  return (
+                    <div key={trade.id} className="w-full h-full relative">
+                      {/* SL Line */}
+                      <div className="absolute left-0 right-0 top-[28%] border-b border-dashed border-rose-500/80 flex items-center justify-between px-4">
+                        <span className="text-[10px] font-mono font-bold text-rose-400 bg-rose-950/80 px-2 py-0.5 rounded border border-rose-500/40 backdrop-blur-sm">
+                          🛑 STOP LOSS [ -${slLoss.toFixed(2)} USD ]
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-white bg-rose-600 px-2 py-0.5 rounded shadow">
+                          ${slPrice.toFixed(2)}
+                        </span>
+                      </div>
+
+                      {/* Entry Line */}
+                      <div className={cn(
+                        "absolute left-0 right-0 top-[48%] border-b-2 flex items-center justify-between px-4 transition-colors",
+                        isBuy ? "border-emerald-500/90" : "border-rose-500/90"
+                      )}>
+                        <div className="flex items-center gap-2">
+                          <span className={cn(
+                            "text-[11px] font-mono font-black px-2 py-0.5 rounded text-white shadow-lg",
+                            isBuy ? "bg-emerald-600" : "bg-rose-600"
+                          )}>
+                            {isBuy ? "+1 BUY" : "-1 SELL"} ${amount.toFixed(2)}
+                          </span>
+                          <span className="text-[10px] font-mono text-muted-foreground bg-background/90 px-1.5 py-0.5 rounded border border-border/40">
+                            Entry: ${strike.toFixed(2)}
+                          </span>
+                          <span className={cn(
+                            "text-[11px] font-mono font-black px-2 py-0.5 rounded text-white shadow-lg flex items-center gap-1",
+                            isWinning ? "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.5)]" : "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,0.5)]"
+                          )}>
+                            P&L: {livePnL >= 0 ? "+" : ""}${livePnL.toFixed(2)} USD
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono font-black text-amber-300 bg-black/90 px-2 py-0.5 rounded border border-amber-500/40 flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-amber-400 animate-pulse" />
+                            {timeStr}
+                          </span>
+                          <span className={cn(
+                            "text-[10px] font-mono font-black px-2 py-0.5 rounded text-white shadow",
+                            isBuy ? "bg-emerald-600" : "bg-rose-600"
+                          )}>
+                            ${strike.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* TP Line */}
+                      <div className="absolute left-0 right-0 top-[68%] border-b border-dashed border-emerald-500/80 flex items-center justify-between px-4">
+                        <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40 backdrop-blur-sm">
+                          🎯 TAKE PROFIT [ +${tpProfit.toFixed(2)} USD ]
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-white bg-emerald-600 px-2 py-0.5 rounded shadow">
+                          ${tpPrice.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
             
