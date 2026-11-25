@@ -79,6 +79,16 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
            user.role === "ADMIN_2";
   }, [user]);
 
+  const isNavActive = (href: string, currentLoc: string): boolean => {
+    if (href === "/markets/BTCUSD") {
+      return currentLoc.startsWith("/markets/") || currentLoc.startsWith("/trade/") || currentLoc.startsWith("/market/") || currentLoc === href;
+    }
+    if (href === "/app/markets") {
+      return currentLoc === "/app/markets" || currentLoc === "/markets";
+    }
+    return currentLoc === href || (href !== "/app" && currentLoc.startsWith(href));
+  };
+
   const nav: NavItem[] = useMemo(
     () => {
       const allNav = [
@@ -117,7 +127,7 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
             <div className="px-2 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 mb-3">General</div>
             <nav className="space-y-1">
               {nav.slice(0, 1).map((item) => {
-                const active = loc === item.href;
+                const active = isNavActive(item.href, loc);
                 return (
                   <Link key={item.href} href={item.href} className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all",
@@ -135,7 +145,7 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
             <div className="px-2 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 mb-3">Trading & Portfolio</div>
             <nav className="space-y-1">
               {nav.slice(1, 5).map((item) => {
-                const active = loc.startsWith(item.href);
+                const active = isNavActive(item.href, loc);
                 return (
                   <Link key={item.href} href={item.href} className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all",
@@ -153,7 +163,7 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
             <div className="px-2 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60 mb-3">Research</div>
             <nav className="space-y-1">
               {nav.slice(5).map((item) => {
-                const active = loc.startsWith(item.href);
+                const active = isNavActive(item.href, loc);
                 return (
                   <Link key={item.href} href={item.href} className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all",
@@ -364,24 +374,35 @@ export default function AppShell(props: { children: ReactNode; title?: string; s
       {/* Mobile Bottom Tab Bar */}
       {!hideMobileNav && (
         <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-card/80 backdrop-blur-xl border-t border-border/60 z-50 px-2 flex justify-around items-center pb-safe">
-        {[nav[0], nav[3], nav[2], nav[4], nav[6]].filter(Boolean).map((item) => {
-          // Select 5 key items for mobile nav: Dashboard, Markets, Watchlists, Orders, Insights
-          const active = loc === item.href || (item.href !== "/app" && loc.startsWith(item.href));
-          return (
-            <Link key={item.href} href={item.href} className={cn(
-              "flex flex-col items-center justify-center w-full h-full gap-1 transition-colors",
-              active ? "text-primary" : "text-muted-foreground hover:text-foreground"
-            )}>
-              <div className={cn("p-1.5 rounded-xl transition-all", active && "bg-primary/15")}>
-                 {item.icon}
-              </div>
-              <span className="text-[9px] font-bold tracking-tight truncate w-full text-center px-1">
-                {item.label}
-              </span>
-            </Link>
-          );
-        })}
-      </nav>
+          {(() => {
+            const tradeItem = nav.find(i => i.href === "/markets/BTCUSD");
+            const marketsItem = nav.find(i => i.href === "/app/markets");
+            const portfolioItem = nav.find(i => i.href === "/app/portfolio");
+            const ordersItem = nav.find(i => i.href === "/app/orders");
+            const adminItem = nav.find(i => i.href === "/app/admin");
+            const watchlistItem = nav.find(i => i.href === "/app/watchlists");
+
+            const lastItem = (isAdmin && adminItem) ? adminItem : watchlistItem;
+            const mobileItems = [tradeItem, marketsItem, portfolioItem, ordersItem, lastItem].filter(Boolean) as NavItem[];
+
+            return mobileItems.map((item) => {
+              const active = isNavActive(item.href, loc);
+              return (
+                <Link key={item.href} href={item.href} className={cn(
+                  "flex flex-col items-center justify-center w-full h-full gap-1 transition-colors",
+                  active ? "text-primary" : "text-muted-foreground hover:text-foreground"
+                )}>
+                  <div className={cn("p-1.5 rounded-xl transition-all", active && "bg-primary/15")}>
+                     {item.icon}
+                  </div>
+                  <span className="text-[9px] font-bold tracking-tight truncate w-full text-center px-1">
+                    {item.label}
+                  </span>
+                </Link>
+              );
+            });
+          })()}
+        </nav>
       )}
     </div>
   );
