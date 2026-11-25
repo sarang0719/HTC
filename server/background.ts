@@ -336,6 +336,7 @@ export function startBackgroundTasks() {
     });
   }
 
+  let isFinnhubRateLimited = false;
   function setupFinnhubWebsocket() {
     const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "d9c7kppr01qs0pv947ogd9c7kppr01qs0pv947p0";
     const ws = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
@@ -396,12 +397,23 @@ export function startBackgroundTasks() {
     });
 
     ws.on("close", () => {
-      console.log("Finnhub WebSocket closed. Reconnecting in 5s...");
-      setTimeout(setupFinnhubWebsocket, 5000);
+      const delay = isFinnhubRateLimited ? 120000 : 10000;
+      if (!isFinnhubRateLimited) {
+        console.log("Finnhub WebSocket closed. Reconnecting in 10s...");
+      }
+      setTimeout(setupFinnhubWebsocket, delay);
     });
     
-    ws.on("error", (err) => {
-      console.error("Finnhub WS error:", err);
+    ws.on("error", (err: any) => {
+      if (err?.message?.includes("429")) {
+        console.warn("[Finnhub WS] Rate limited (429). Backing off for 2 minutes...");
+        isFinnhubRateLimited = true;
+        setTimeout(() => {
+          isFinnhubRateLimited = false;
+        }, 120000);
+      } else {
+        console.error("Finnhub WS error:", err?.message || err);
+      }
     });
   }
 
