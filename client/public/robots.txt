@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Allow: /markets
+Allow: /markets/*
+Allow: /app/markets
+Disallow: /api/
+Disallow: /app/admin
+
+Sitemap: https://htc-ai-trading.onrender.com/sitemap.xml
